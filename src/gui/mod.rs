@@ -329,6 +329,12 @@ impl FigTreeGui {
         if let Some(tree) = self.tree_viewer.current_tree().cloned() {
             if let Some(layout) =
                 crate::tree::layout::TreeLayout::from_tree(&tree, self.current_layout)
+                    .map(|layout| layout.with_tip_labels(
+                        &tree,
+                        self.tree_painter.show_tip_labels,
+                        self.tree_painter.tip_label_font_size,
+                        self.tree_painter.tip_label_font_family.into_font_family(),
+                    ))
             {
                 // Use 90% of available height for the tree, with minimum of 400px
                 let raw_height = ui.available_height();
