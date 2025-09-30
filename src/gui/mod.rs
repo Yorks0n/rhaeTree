@@ -387,7 +387,16 @@ impl FigTreeGui {
             {
                 // Use 90% of available height for the tree, with minimum of 400px
                 let raw_height = ui.available_height();
-                let expansion = self.tree_viewer.vertical_expansion();
+                // Only apply expansion for Rectangular and Slanted layouts
+                let expansion = if matches!(
+                    self.current_layout,
+                    crate::tree::layout::TreeLayoutType::Rectangular
+                        | crate::tree::layout::TreeLayoutType::Slanted
+                ) {
+                    self.tree_viewer.vertical_expansion()
+                } else {
+                    1.0
+                };
                 let base_height = if raw_height.is_finite() {
                     (raw_height * 0.9).max(400.0).min(1200.0)
                 } else {
@@ -403,7 +412,16 @@ impl FigTreeGui {
                     800.0
                 };
 
-                let zoom = self.tree_viewer.zoom.max(1.0);
+                // Only apply zoom for Rectangular and Slanted layouts
+                let zoom = if matches!(
+                    self.current_layout,
+                    crate::tree::layout::TreeLayoutType::Rectangular
+                        | crate::tree::layout::TreeLayoutType::Slanted
+                ) {
+                    self.tree_viewer.zoom.max(1.0)
+                } else {
+                    1.0
+                };
                 let canvas_width = available_width * zoom;
                 let canvas_height = desired_height * zoom;
 
@@ -988,17 +1006,24 @@ impl eframe::App for FigTreeGui {
                             }
                         }
 
-                        ui.label("Zoom:");
-                        ui.add(
-                            egui::Slider::new(&mut self.tree_viewer.zoom, 1.0..=10.0)
-                                .show_value(false),
-                        );
+                        // Zoom and Expansion sliders - only show for Rectangular and Slanted
+                        if matches!(
+                            self.current_layout,
+                            crate::tree::layout::TreeLayoutType::Rectangular
+                                | crate::tree::layout::TreeLayoutType::Slanted
+                        ) {
+                            ui.label("Zoom:");
+                            ui.add(
+                                egui::Slider::new(&mut self.tree_viewer.zoom, 1.0..=10.0)
+                                    .show_value(false),
+                            );
 
-                        ui.label("Expansion:");
-                        ui.add(
-                            egui::Slider::new(&mut self.tree_viewer.vertical_expansion, 1.0..=2.0)
-                                .show_value(false),
-                        );
+                            ui.label("Expansion:");
+                            ui.add(
+                                egui::Slider::new(&mut self.tree_viewer.vertical_expansion, 1.0..=2.0)
+                                    .show_value(false),
+                            );
+                        }
 
                         // Align Tip Labels checkbox - only show for Rectangular, Circular, Slanted
                         if matches!(
