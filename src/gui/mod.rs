@@ -945,6 +945,7 @@ impl eframe::App for FigTreeGui {
                     .default_open(self.panel_states.layout_expanded)
                     .show(ui, |ui| {
                         ui.label("Layout Type:");
+                        let old_layout = self.current_layout;
                         egui::ComboBox::from_id_salt("layout_combo")
                             .selected_text(format!("{:?}", self.current_layout))
                             .show_ui(ui, |ui| {
@@ -970,20 +971,22 @@ impl eframe::App for FigTreeGui {
                                 );
                                 ui.selectable_value(
                                     &mut self.current_layout,
-                                    crate::tree::layout::TreeLayoutType::Cladogram,
-                                    "Cladogram",
-                                );
-                                ui.selectable_value(
-                                    &mut self.current_layout,
-                                    crate::tree::layout::TreeLayoutType::Phylogram,
-                                    "Phylogram",
-                                );
-                                ui.selectable_value(
-                                    &mut self.current_layout,
                                     crate::tree::layout::TreeLayoutType::Daylight,
                                     "Daylight",
                                 );
                             });
+
+                        // Auto-disable Align Tip Labels when switching to unsupported layouts
+                        if old_layout != self.current_layout && self.tree_painter.align_tip_labels {
+                            if !matches!(
+                                self.current_layout,
+                                crate::tree::layout::TreeLayoutType::Rectangular
+                                    | crate::tree::layout::TreeLayoutType::Circular
+                                    | crate::tree::layout::TreeLayoutType::Slanted
+                            ) {
+                                self.tree_painter.align_tip_labels = false;
+                            }
+                        }
 
                         ui.label("Zoom:");
                         ui.add(
