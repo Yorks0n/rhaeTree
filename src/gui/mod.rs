@@ -780,18 +780,6 @@ impl eframe::App for FigTreeGui {
                     columns[0].with_layout(
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
-                        if ui.small_button("📂 Open").clicked() {
-                            self.open_file_dialog();
-                        }
-
-                        if let Some(path) = self.config.tree_path.clone() {
-                            if ui.small_button("🔄 Reload").clicked() {
-                                if let Err(err) = self.load_from_path(path) {
-                                    self.last_error = Some(err);
-                                }
-                            }
-                        }
-
                         let branch_target = self.selected_branch_node();
                         let reroot_response =
                             ui.add_enabled(branch_target.is_some(), egui::Button::new("⟳ Reroot"));
@@ -1660,9 +1648,6 @@ impl eframe::App for FigTreeGui {
                 if trees_response.header_response.clicked() {
                     self.panel_states.trees_expanded = !self.panel_states.trees_expanded;
                 }
-
-                ui.separator();
-                ui.toggle_value(&mut self.config.fast_mode, "Fast mode");
                     }); // End of ScrollArea
             });
 
@@ -1697,12 +1682,7 @@ impl eframe::App for FigTreeGui {
 
         egui::TopBottomPanel::bottom("figtree_status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Fast mode: {}",
-                    if self.config.fast_mode { "on" } else { "off" }
-                ));
                 if let Some(path) = &self.config.tree_path {
-                    ui.separator();
                     ui.label(format!("Current file: {}", path.display()));
                 }
             });
