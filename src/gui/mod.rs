@@ -628,7 +628,9 @@ impl eframe::App for FigTreeGui {
             .max_height(32.0)
             .show(ctx, |ui| {
                 ui.columns(3, |columns| {
-                    columns[0].horizontal(|ui| {
+                    columns[0].with_layout(
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
                         if ui.small_button("📂 Open").clicked() {
                             self.open_file_dialog();
                         }
@@ -640,28 +642,6 @@ impl eframe::App for FigTreeGui {
                                 }
                             }
                         }
-
-                        let has_selection = !self.tree_viewer.selected_tips().is_empty()
-                            || !self.tree_viewer.selected_nodes().is_empty();
-                        let color_response =
-                            ui.add_enabled(has_selection, egui::Button::new("🎨 Color"));
-                        if color_response.clicked() {
-                            let initial = self.selection_current_color();
-                            self.color_picker_color = initial;
-                            self.color_picker_hex_input = format!(
-                                "#{:02X}{:02X}{:02X}",
-                                initial.r(),
-                                initial.g(),
-                                initial.b()
-                            );
-                            self.color_picker_mode = ColorValueMode::Hex;
-                            self.color_picker_open = true;
-                            self.color_picker_origin = Some(color_response.rect.right_top());
-                            self.color_picker_popup_open = false;
-                            self.color_picker_popup_rect = None;
-                        }
-
-                        ui.add_space(6.0);
 
                         let branch_target = self.selected_branch_node();
                         let reroot_response =
@@ -685,32 +665,32 @@ impl eframe::App for FigTreeGui {
                                 ctx.request_repaint();
                             }
                         }
+
+                        let has_selection = !self.tree_viewer.selected_tips().is_empty()
+                            || !self.tree_viewer.selected_nodes().is_empty();
+                        let color_response =
+                            ui.add_enabled(has_selection, egui::Button::new("🎨 Color"));
+                        if color_response.clicked() {
+                            let initial = self.selection_current_color();
+                            self.color_picker_color = initial;
+                            self.color_picker_hex_input = format!(
+                                "#{:02X}{:02X}{:02X}",
+                                initial.r(),
+                                initial.g(),
+                                initial.b()
+                            );
+                            self.color_picker_mode = ColorValueMode::Hex;
+                            self.color_picker_open = true;
+                            self.color_picker_origin = Some(color_response.rect.right_top());
+                            self.color_picker_popup_open = false;
+                            self.color_picker_popup_rect = None;
+                        }
                     });
 
-                    columns[1].horizontal(|ui| {
-                        let mode = self.tree_viewer.selection_mode();
-                        let options = [
-                            (SelectionMode::Nodes, "Node"),
-                            (SelectionMode::Clade, "Clade"),
-                            (SelectionMode::Taxa, "Taxa"),
-                        ];
-                        let button_width = 70.0;
-                        for (idx, (selection, label)) in options.iter().enumerate() {
-                            let button = egui::Button::new(*label).selected(mode == *selection);
-                            if ui
-                                .add_sized(
-                                    egui::vec2(button_width, ui.spacing().interact_size.y),
-                                    button,
-                                )
-                                .clicked()
-                            {
-                                self.tree_viewer.set_selection_mode(*selection);
-                                self.tree_viewer.clear_selection();
-                            }
-                            if idx + 1 != options.len() {
-                                ui.add_space(4.0);
-                            }
-                        }
+                    // Empty middle column
+                    columns[1].with_layout(
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |_ui| {
                     });
 
                     columns[2].with_layout(
@@ -725,7 +705,7 @@ impl eframe::App for FigTreeGui {
                                 self.apply_filter();
                             }
 
-                            ui.add_space(6.0);
+                            ui.add_space(8.0);
 
                             let mut mode = self.filter_mode;
                             let combo_response = egui::ComboBox::from_id_salt("filter_mode_combo")
@@ -772,6 +752,26 @@ impl eframe::App for FigTreeGui {
                             if combo_changed && self.filter_mode != mode {
                                 self.filter_mode = mode;
                                 self.apply_filter();
+                            }
+
+                            ui.add_space(6.0);
+
+                            // Selection Mode buttons
+                            let mode = self.tree_viewer.selection_mode();
+                            let options = [
+                                (SelectionMode::Taxa, "Taxa"),
+                                (SelectionMode::Clade, "Clade"),
+                                (SelectionMode::Nodes, "Node"),
+                            ];
+                            for (idx, (selection, label)) in options.iter().enumerate() {
+                                if idx > 0 {
+                                    ui.add_space(2.0);
+                                }
+                                let button = egui::Button::new(*label).selected(mode == *selection);
+                                if ui.add(button).clicked() {
+                                    self.tree_viewer.set_selection_mode(*selection);
+                                    self.tree_viewer.clear_selection();
+                                }
                             }
                         },
                     );
