@@ -6,7 +6,7 @@ use eframe::egui::{self, color_picker, Color32};
 use log::{error, info};
 use rfd::FileDialog;
 
-use crate::app::AppConfig;
+use crate::app::{AppConfig, ExportFormat};
 use crate::io;
 use crate::tree::painter::{TipLabelDisplay, TipLabelFontFamily, TipLabelNumberFormat};
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
@@ -39,6 +39,9 @@ pub struct FigTreeGui {
     node_ordering: NodeOrdering,
     transform_branches_enabled: bool,
     branch_transform: BranchTransform,
+    pending_export_path: Option<(PathBuf, crate::app::ExportFormat)>,
+    tree_canvas_rect: Option<egui::Rect>,
+    pixels_per_point: f32,
 }
 
 #[derive(Default)]
@@ -192,6 +195,9 @@ impl FigTreeGui {
             node_ordering: NodeOrdering::Increasing,
             transform_branches_enabled: false,
             branch_transform: BranchTransform::Proportional,
+            pending_export_path: None,
+            tree_canvas_rect: None,
+            pixels_per_point: 1.0,
         };
 
         if let Some(path) = app.config.tree_path.clone() {
@@ -370,6 +376,90 @@ impl FigTreeGui {
         }
     }
 
+    fn export_png_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(path) = FileDialog::new()
+            .add_filter("PNG Image", &["png"])
+            .set_file_name("tree.png")
+            .save_file()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+            self.status = format!("Requesting screenshot for export to {}", path.display());
+            // Store the path for later use when screenshot is ready
+            self.pending_export_path = Some((path, ExportFormat::Png));
+        }
+    }
+
+    fn export_jpeg_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(path) = FileDialog::new()
+            .add_filter("JPEG Image", &["jpg", "jpeg"])
+            .set_file_name("tree.jpg")
+            .save_file()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+            self.status = format!("Requesting screenshot for export to {}", path.display());
+            // Store the path for later use when screenshot is ready
+            self.pending_export_path = Some((path, ExportFormat::Jpeg));
+        }
+    }
+
+    fn save_screenshot_to_file(
+        &self,
+        screenshot: &egui::ColorImage,
+        path: &std::path::Path,
+        format: ExportFormat,
+    ) -> Result<(), String> {
+        use image::{ImageBuffer, RgbaImage};
+
+        // Convert egui ColorImage to image crate's RgbaImage
+        let full_image: RgbaImage = ImageBuffer::from_raw(
+            screenshot.width() as u32,
+            screenshot.height() as u32,
+            screenshot.pixels.iter().flat_map(|c| c.to_array()).collect(),
+        )
+        .ok_or_else(|| "Failed to create image buffer".to_string())?;
+
+        // Crop to tree canvas area if available
+        let rgba_image = if let Some(canvas_rect) = self.tree_canvas_rect {
+            // Convert rect coordinates to pixel coordinates using pixels_per_point
+            let ppp = self.pixels_per_point;
+            let x = ((canvas_rect.min.x * ppp).max(0.0) as u32).min(screenshot.width() as u32);
+            let y = ((canvas_rect.min.y * ppp).max(0.0) as u32).min(screenshot.height() as u32);
+            let width = ((canvas_rect.width() * ppp) as u32)
+                .min(screenshot.width() as u32 - x);
+            let height = ((canvas_rect.height() * ppp) as u32)
+                .min(screenshot.height() as u32 - y);
+
+            // Crop the image
+            image::DynamicImage::ImageRgba8(full_image)
+                .crop_imm(x, y, width, height)
+                .to_rgba8()
+        } else {
+            // If no canvas rect, use full screenshot
+            full_image
+        };
+
+        // Save based on format
+        match format {
+            ExportFormat::Png => {
+                rgba_image
+                    .save_with_format(path, image::ImageFormat::Png)
+                    .map_err(|e| format!("Failed to save PNG: {}", e))?;
+            }
+            ExportFormat::Jpeg => {
+                // Convert RGBA to RGB for JPEG (JPEG doesn't support transparency)
+                let rgb_image = image::DynamicImage::ImageRgba8(rgba_image).to_rgb8();
+                rgb_image
+                    .save_with_format(path, image::ImageFormat::Jpeg)
+                    .map_err(|e| format!("Failed to save JPEG: {}", e))?;
+            }
+            _ => {
+                return Err(format!("Unsupported export format: {:?}", format));
+            }
+        }
+
+        Ok(())
+    }
+
     fn draw_tree_canvas(&mut self, ui: &mut egui::Ui) {
         if let Some(mut tree) = self.tree_viewer.current_tree().cloned() {
             // Apply branch transformation if enabled
@@ -512,6 +602,9 @@ impl FigTreeGui {
                     margin,
                 );
 
+                // Save the canvas rect for export
+                self.tree_canvas_rect = Some(rect);
+
                 // Handle click interactions after painting
                 if response.clicked() {
                     if let Some(pointer_pos) = response.interact_pointer_pos() {
@@ -623,6 +716,27 @@ impl FigTreeGui {
 
 impl eframe::App for FigTreeGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Store pixels_per_point for export
+        self.pixels_per_point = ctx.pixels_per_point();
+
+        // Handle screenshot results for export
+        ctx.input(|i| {
+            for event in &i.events {
+                if let egui::Event::Screenshot { image, .. } = event {
+                    if let Some((path, format)) = self.pending_export_path.take() {
+                        match self.save_screenshot_to_file(image, &path, format) {
+                            Ok(_) => {
+                                self.status = format!("Successfully exported to {}", path.display());
+                            }
+                            Err(e) => {
+                                self.last_error = Some(format!("Failed to export: {}", e));
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
         // Menu bar
         egui::TopBottomPanel::top("menu_bar")
             .show(ctx, |ui| {
@@ -706,13 +820,13 @@ impl eframe::App for FigTreeGui {
                             ui.close();
                         }
 
-                        if ui.add_enabled(false, egui::Button::new("Export PNG")).clicked() {
-                            // TODO: Export as PNG
+                        if ui.button("Export PNG").clicked() {
+                            self.export_png_dialog(ctx);
                             ui.close();
                         }
 
-                        if ui.add_enabled(false, egui::Button::new("Export JPEG")).clicked() {
-                            // TODO: Export as JPEG
+                        if ui.button("Export JPEG").clicked() {
+                            self.export_jpeg_dialog(ctx);
                             ui.close();
                         }
                     });

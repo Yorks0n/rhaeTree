@@ -54,6 +54,7 @@ pub struct AppConfig {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, ValueEnum)]
 pub enum ExportFormat {
     Png,
+    Jpeg,
     Pdf,
     Svg,
 }
@@ -62,6 +63,7 @@ impl fmt::Display for ExportFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ExportFormat::Png => write!(f, "png"),
+            ExportFormat::Jpeg => write!(f, "jpeg"),
             ExportFormat::Pdf => write!(f, "pdf"),
             ExportFormat::Svg => write!(f, "svg"),
         }

@@ -14,3 +14,4 @@ env_logger = "0.11"
 phylotree = "0.1.3"
 wgpu = { version = "25", default-features = false, features = ["metal"] }
 winit = "0.29"
+image = { version = "0.25", features = ["png", "jpeg"] }
