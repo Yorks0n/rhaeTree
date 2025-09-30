@@ -85,6 +85,10 @@ impl TreeViewer {
         self.trees.get(self.current_tree_index)
     }
 
+    pub fn current_tree_mut(&mut self) -> Option<&mut Tree> {
+        self.trees.get_mut(self.current_tree_index)
+    }
+
     pub fn current_tree_index(&self) -> usize {
         self.current_tree_index
     }
@@ -811,6 +815,14 @@ impl TreeViewer {
                 // TODO: Implement regex matching
                 false
             }
+        }
+    }
+
+    /// Apply node ordering to the current tree
+    /// If `increasing` is true, smaller clades come first; otherwise larger clades come first
+    pub fn apply_node_ordering(&mut self, increasing: bool) {
+        if let Some(tree) = self.trees.get_mut(self.current_tree_index) {
+            tree.order_nodes(increasing);
         }
     }
 }

@@ -1298,7 +1298,28 @@ impl eframe::App for FigTreeGui {
                         // Order nodes checkbox and combobox
                         let mut order_enabled = self.order_nodes_enabled;
                         if ui.checkbox(&mut order_enabled, "Order nodes").changed() {
+                            let previous_enabled = self.order_nodes_enabled;
                             self.order_nodes_enabled = order_enabled;
+
+                            if order_enabled && !previous_enabled {
+                                // Apply ordering when enabling
+                                let increasing = matches!(self.node_ordering, NodeOrdering::Increasing);
+                                self.tree_viewer.apply_node_ordering(increasing);
+                            } else if !order_enabled && previous_enabled {
+                                // Restore original order when disabling
+                                if let Some(original) = self.bundle.as_ref()
+                                    .and_then(|b| b.trees.get(self.tree_viewer.current_tree_index()))
+                                {
+                                    if let Some(current) = self.tree_viewer.current_tree_mut() {
+                                        // Restore children order from original
+                                        for i in 0..current.nodes.len() {
+                                            if i < original.nodes.len() {
+                                                current.nodes[i].children = original.nodes[i].children.clone();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         ui.horizontal(|ui| {
@@ -1320,9 +1341,11 @@ impl eframe::App for FigTreeGui {
                                         );
                                     });
                             });
-                            if ordering != self.node_ordering {
+                            if self.order_nodes_enabled && ordering != self.node_ordering {
                                 self.node_ordering = ordering;
-                                // TODO: Apply ordering logic
+                                // Apply ordering when changed
+                                let increasing = matches!(ordering, NodeOrdering::Increasing);
+                                self.tree_viewer.apply_node_ordering(increasing);
                             }
                         });
 

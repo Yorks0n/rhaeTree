@@ -35,6 +35,57 @@ impl Tree {
         }
     }
 
+    /// Calculate the number of leaf descendants for each node
+    fn calculate_clade_sizes(&self) -> Vec<usize> {
+        let mut sizes = vec![0; self.nodes.len()];
+
+        // Post-order traversal to calculate sizes
+        fn calculate_size(node_id: NodeId, nodes: &[TreeNode], sizes: &mut [usize]) -> usize {
+            let node = &nodes[node_id];
+
+            if node.is_leaf() {
+                sizes[node_id] = 1;
+                return 1;
+            }
+
+            let mut size = 0;
+            for &child_id in &node.children {
+                size += calculate_size(child_id, nodes, sizes);
+            }
+
+            sizes[node_id] = size;
+            size
+        }
+
+        if let Some(root_id) = self.root {
+            calculate_size(root_id, &self.nodes, &mut sizes);
+        }
+
+        sizes
+    }
+
+    /// Order all nodes' children by clade size
+    /// If `increasing` is true, smaller clades come first; otherwise larger clades come first
+    pub fn order_nodes(&mut self, increasing: bool) {
+        let sizes = self.calculate_clade_sizes();
+
+        // Sort children of each node based on clade sizes
+        for node in &mut self.nodes {
+            if node.children.len() > 1 {
+                node.children.sort_by(|&a, &b| {
+                    let size_a = sizes[a];
+                    let size_b = sizes[b];
+
+                    if increasing {
+                        size_a.cmp(&size_b)
+                    } else {
+                        size_b.cmp(&size_a)
+                    }
+                });
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub fn node(&self, id: NodeId) -> Option<&TreeNode> {
         self.nodes.get(id)
