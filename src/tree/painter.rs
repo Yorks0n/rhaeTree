@@ -59,6 +59,9 @@ pub struct TreePainter {
     pub show_node_labels: bool,
     pub show_branch_labels: bool,
     pub show_scale_bar: bool,
+    pub show_tip_shapes: bool,
+    pub show_node_shapes: bool,
+    pub show_node_bars: bool,
     pub align_tip_labels: bool,
     pub tip_label_display: TipLabelDisplay,
     pub tip_label_font_family: TipLabelFontFamily,
@@ -88,6 +91,9 @@ impl Default for TreePainter {
             show_node_labels: false,
             show_branch_labels: false,
             show_scale_bar: false,
+            show_tip_shapes: false,
+            show_node_shapes: false,
+            show_node_bars: false,
             align_tip_labels: false,
             tip_label_display: TipLabelDisplay::Names,
             tip_label_font_family: TipLabelFontFamily::Proportional,
@@ -426,7 +432,16 @@ impl TreePainter {
                 self.internal_node_color
             };
 
-            painter.circle_filled(pos, self.node_radius, color);
+            // Only draw node shapes if the corresponding option is enabled
+            let should_draw = if node.is_leaf() {
+                self.show_tip_shapes
+            } else {
+                self.show_node_shapes
+            };
+
+            if should_draw {
+                painter.circle_filled(pos, self.node_radius, color);
+            }
 
             // Paint labels
             if node.is_leaf() && self.show_tip_labels {

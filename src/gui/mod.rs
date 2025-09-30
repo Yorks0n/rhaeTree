@@ -48,6 +48,9 @@ pub struct PanelStates {
     tip_labels_expanded: bool,
     branch_labels_expanded: bool,
     scale_bar_expanded: bool,
+    tip_shapes_expanded: bool,
+    node_shapes_expanded: bool,
+    node_bars_expanded: bool,
     trees_expanded: bool,
     transform_expanded: bool,
 }
@@ -168,6 +171,9 @@ impl FigTreeGui {
                 node_labels_expanded: true,
                 branch_labels_expanded: false,
                 scale_bar_expanded: false,
+                tip_shapes_expanded: false,
+                node_shapes_expanded: false,
+                node_bars_expanded: false,
                 trees_expanded: true,
                 transform_expanded: true,
             },
@@ -1277,6 +1283,90 @@ impl eframe::App for FigTreeGui {
 
                 scale_state.show_body_indented(&scale_header_response.response, ui, |_ui| {});
                 self.panel_states.scale_bar_expanded = scale_state.is_open();
+
+                // Tip Shapes
+                let tip_shapes_header_id = ui.make_persistent_id("controls_tip_shapes");
+                let mut tip_shapes_state = CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    tip_shapes_header_id,
+                    self.panel_states.tip_shapes_expanded,
+                );
+
+                let tip_shapes_header_response = ui.horizontal(|ui| {
+                    let toggle = tip_shapes_state.show_toggle_button(ui, paint_default_icon);
+
+                    let mut show_tip_shapes = self.tree_painter.show_tip_shapes;
+                    if ui.checkbox(&mut show_tip_shapes, "").changed() {
+                        self.tree_painter.show_tip_shapes = show_tip_shapes;
+                    }
+
+                    let label_response =
+                        ui.add(egui::Label::new("Tip Shapes").sense(egui::Sense::click()));
+                    if label_response.clicked() {
+                        tip_shapes_state.toggle(ui);
+                    }
+
+                    toggle
+                });
+
+                tip_shapes_state.show_body_indented(&tip_shapes_header_response.response, ui, |_ui| {});
+                self.panel_states.tip_shapes_expanded = tip_shapes_state.is_open();
+
+                // Node Shapes
+                let node_shapes_header_id = ui.make_persistent_id("controls_node_shapes");
+                let mut node_shapes_state = CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    node_shapes_header_id,
+                    self.panel_states.node_shapes_expanded,
+                );
+
+                let node_shapes_header_response = ui.horizontal(|ui| {
+                    let toggle = node_shapes_state.show_toggle_button(ui, paint_default_icon);
+
+                    let mut show_node_shapes = self.tree_painter.show_node_shapes;
+                    if ui.checkbox(&mut show_node_shapes, "").changed() {
+                        self.tree_painter.show_node_shapes = show_node_shapes;
+                    }
+
+                    let label_response =
+                        ui.add(egui::Label::new("Node Shapes").sense(egui::Sense::click()));
+                    if label_response.clicked() {
+                        node_shapes_state.toggle(ui);
+                    }
+
+                    toggle
+                });
+
+                node_shapes_state.show_body_indented(&node_shapes_header_response.response, ui, |_ui| {});
+                self.panel_states.node_shapes_expanded = node_shapes_state.is_open();
+
+                // Node Bars
+                let node_bars_header_id = ui.make_persistent_id("controls_node_bars");
+                let mut node_bars_state = CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    node_bars_header_id,
+                    self.panel_states.node_bars_expanded,
+                );
+
+                let node_bars_header_response = ui.horizontal(|ui| {
+                    let toggle = node_bars_state.show_toggle_button(ui, paint_default_icon);
+
+                    let mut show_node_bars = self.tree_painter.show_node_bars;
+                    if ui.checkbox(&mut show_node_bars, "").changed() {
+                        self.tree_painter.show_node_bars = show_node_bars;
+                    }
+
+                    let label_response =
+                        ui.add(egui::Label::new("Node Bars").sense(egui::Sense::click()));
+                    if label_response.clicked() {
+                        node_bars_state.toggle(ui);
+                    }
+
+                    toggle
+                });
+
+                node_bars_state.show_body_indented(&node_bars_header_response.response, ui, |_ui| {});
+                self.panel_states.node_bars_expanded = node_bars_state.is_open();
 
                 // Trees Panel
                 let trees_response = egui::CollapsingHeader::new("Trees")
