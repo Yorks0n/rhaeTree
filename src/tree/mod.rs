@@ -86,6 +86,147 @@ impl Tree {
         }
     }
 
+    /// Calculate the maximum distance from each node to any leaf in its subtree
+    fn calculate_max_distances_to_leaves(&self) -> Vec<f64> {
+        let mut distances = vec![0.0; self.nodes.len()];
+
+        fn calculate_distance(
+            node_id: NodeId,
+            nodes: &[TreeNode],
+            distances: &mut [f64],
+        ) -> f64 {
+            let node = &nodes[node_id];
+
+            if node.is_leaf() {
+                distances[node_id] = 0.0;
+                return 0.0;
+            }
+
+            let mut max_distance: f64 = 0.0;
+            for &child_id in &node.children {
+                let child_distance = calculate_distance(child_id, nodes, distances);
+                let branch_length = nodes[child_id].length.unwrap_or(1.0);
+                max_distance = max_distance.max(child_distance + branch_length);
+            }
+
+            distances[node_id] = max_distance;
+            max_distance
+        }
+
+        if let Some(root_id) = self.root {
+            calculate_distance(root_id, &self.nodes, &mut distances);
+        }
+
+        distances
+    }
+
+    /// Apply equal branch transformation: all branches have the same length
+    pub fn apply_equal_transform(&mut self) {
+        for node in &mut self.nodes {
+            if node.parent.is_some() {
+                node.length = Some(1.0);
+            }
+        }
+    }
+
+    /// Calculate the distance from root to each node
+    fn calculate_distances_from_root(&self) -> Vec<f64> {
+        let mut distances = vec![0.0; self.nodes.len()];
+
+        fn calculate_distance(
+            node_id: NodeId,
+            current_distance: f64,
+            nodes: &[TreeNode],
+            distances: &mut [f64],
+        ) {
+            distances[node_id] = current_distance;
+
+            let node = &nodes[node_id];
+            for &child_id in &node.children {
+                let branch_length = nodes[child_id].length.unwrap_or(1.0);
+                calculate_distance(child_id, current_distance + branch_length, nodes, distances);
+            }
+        }
+
+        if let Some(root_id) = self.root {
+            calculate_distance(root_id, 0.0, &self.nodes, &mut distances);
+        }
+
+        distances
+    }
+
+    /// Apply cladogram transformation: equal branch lengths with tips aligned
+    pub fn apply_cladogram_transform(&mut self) {
+        // First, set all branches to equal length
+        for node in &mut self.nodes {
+            if node.parent.is_some() {
+                node.length = Some(1.0);
+            }
+        }
+
+        // Calculate distances from root to each node
+        let distances_from_root = self.calculate_distances_from_root();
+
+        // Find the maximum distance to any leaf
+        let max_distance = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.is_leaf())
+            .map(|(id, _)| distances_from_root[id])
+            .fold(0.0f64, |a, b| a.max(b));
+
+        if max_distance <= 0.0 {
+            return;
+        }
+
+        // For each leaf, extend its branch length to align with the furthest leaf
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].is_leaf() && self.nodes[i].parent.is_some() {
+                let current_distance = distances_from_root[i];
+                let extension = max_distance - current_distance;
+
+                if extension > 0.0 {
+                    let current_length = self.nodes[i].length.unwrap_or(1.0);
+                    self.nodes[i].length = Some(current_length + extension);
+                }
+            }
+        }
+    }
+
+    /// Apply proportional transformation: scale branches to align tips while maintaining proportions
+    pub fn apply_proportional_transform(&mut self) {
+        // Calculate distances from root to each node
+        let distances_from_root = self.calculate_distances_from_root();
+
+        // Find the maximum distance to any leaf
+        let max_distance = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.is_leaf())
+            .map(|(id, _)| distances_from_root[id])
+            .fold(0.0f64, |a, b| a.max(b));
+
+        if max_distance <= 0.0 {
+            return;
+        }
+
+        // For each leaf, extend its branch length to align with the furthest leaf
+        // This maintains the proportions of the original tree
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].is_leaf() && self.nodes[i].parent.is_some() {
+                let current_distance = distances_from_root[i];
+                let extension = max_distance - current_distance;
+
+                if extension > 0.0 {
+                    let current_length = self.nodes[i].length.unwrap_or(1.0);
+                    self.nodes[i].length = Some(current_length + extension);
+                }
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub fn node(&self, id: NodeId) -> Option<&TreeNode> {
         self.nodes.get(id)

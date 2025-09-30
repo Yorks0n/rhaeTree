@@ -59,6 +59,7 @@ pub struct TreePainter {
     pub show_node_labels: bool,
     pub show_branch_labels: bool,
     pub show_scale_bar: bool,
+    pub align_tip_labels: bool,
     pub tip_label_display: TipLabelDisplay,
     pub tip_label_font_family: TipLabelFontFamily,
     pub tip_label_font_size: f32,
@@ -87,6 +88,7 @@ impl Default for TreePainter {
             show_node_labels: false,
             show_branch_labels: false,
             show_scale_bar: false,
+            align_tip_labels: false,
             tip_label_display: TipLabelDisplay::Names,
             tip_label_font_family: TipLabelFontFamily::Proportional,
             tip_label_font_size: 13.0,
@@ -148,6 +150,13 @@ impl TreePainter {
         let inner = if inner.is_positive() { inner } else { rect };
         painter.rect_filled(inner, 8.0, self.canvas_color);
 
+        // Calculate tip extensions for align_tip_labels
+        let tip_extensions = if self.align_tip_labels {
+            self.calculate_tip_extensions(tree)
+        } else {
+            HashMap::new()
+        };
+
         // Calculate scaling factors
         let scale_x = if layout.width <= f32::EPSILON {
             inner.width().max(1.0)
@@ -165,9 +174,36 @@ impl TreePainter {
             match layout.layout_type {
                 super::layout::TreeLayoutType::Circular | super::layout::TreeLayoutType::Radial | super::layout::TreeLayoutType::Daylight => {
                     // 对于圆形、径向和Daylight布局，使用统一的缩放因子保持形状
-                    // 计算画布内切圆的最大可用半径
-                    let available_radius = inner.width().min(inner.height()) * 0.45; // 留10%边距
-                    let layout_radius = (layout.width.max(layout.height) * 0.5).max(1e-6);
+                    // 计算画布内切圆的最大可用半径，为标签留出固定空间
+                    let label_margin = if self.align_tip_labels && !tip_extensions.is_empty() {
+                        self.tip_label_font_size * 8.0 // 为延伸的标签留出屏幕空间
+                    } else {
+                        0.0
+                    };
+                    let available_radius = inner.width().min(inner.height()) * 0.45 - label_margin;
+
+                    // 计算layout的实际半径（在layout坐标系中）
+                    let layout_radius = if self.align_tip_labels && !tip_extensions.is_empty() {
+                        // 找到所有tip到中心的最大距离，加上extension
+                        let mut max_radius = 0.0f32;
+                        for node in &tree.nodes {
+                            if node.is_leaf() {
+                                let pos = layout.positions[node.id];
+                                let center_x = layout.width * 0.5;
+                                let center_y = layout.height * 0.5;
+                                let dx = pos.0 - center_x;
+                                let dy = pos.1 - center_y;
+                                let radius = (dx * dx + dy * dy).sqrt();
+                                max_radius = max_radius.max(radius);
+                            }
+                        }
+                        // 加上最大的extension（都在layout坐标系中）
+                        let max_extension = tip_extensions.values().fold(0.0f64, |a, &b| a.max(b)) as f32;
+                        (max_radius + max_extension).max(1e-6)
+                    } else {
+                        (layout.width.max(layout.height) * 0.5).max(1e-6)
+                    };
+
                     let scale = available_radius / layout_radius;
 
                     // 计算画布中心
@@ -294,6 +330,89 @@ impl TreePainter {
             }
         }
 
+        // Paint tip extensions (dashed lines) if align_tip_labels is enabled
+        if self.align_tip_labels && !tip_extensions.is_empty() {
+            let dashed_stroke = Stroke::new(
+                self.branch_stroke.width * 0.8,
+                Color32::from_gray(150)
+            );
+
+            for (tip_id, &extension) in &tip_extensions {
+                if extension < 1e-6 {
+                    continue;
+                }
+
+                let tip_world = layout.positions[*tip_id];
+                let tip_screen = to_screen(tip_world);
+
+                // Calculate extended position based on layout type
+                let extended_pos = match layout.layout_type {
+                    super::layout::TreeLayoutType::Rectangular |
+                    super::layout::TreeLayoutType::Slanted |
+                    super::layout::TreeLayoutType::Cladogram |
+                    super::layout::TreeLayoutType::Phylogram => {
+                        // For rectangular-like layouts, extend horizontally
+                        let extended_world = (tip_world.0 + extension as f32, tip_world.1);
+                        to_screen(extended_world)
+                    }
+                    super::layout::TreeLayoutType::Circular => {
+                        // For circular layout, extend along the straight branch direction (shoulder to tip)
+                        // Find the continuous branch for this tip
+                        let direction = if let Some(branch) = layout.continuous_branches.iter().find(|b| b.child == *tip_id) {
+                            if branch.points.len() >= 2 {
+                                // branch.points structure: [child, shoulder, ...arc points..., parent]
+                                let child_pos = branch.points[0];
+                                let shoulder_pos = branch.points[1];
+                                let dx = child_pos.0 - shoulder_pos.0;
+                                let dy = child_pos.1 - shoulder_pos.1;
+                                let distance = (dx * dx + dy * dy).sqrt().max(1e-6);
+                                (dx / distance, dy / distance)
+                            } else {
+                                // Fallback: use radial direction from center
+                                let center_x = layout.width * 0.5;
+                                let center_y = layout.height * 0.5;
+                                let dx = tip_world.0 - center_x;
+                                let dy = tip_world.1 - center_y;
+                                let distance = (dx * dx + dy * dy).sqrt().max(1e-6);
+                                (dx / distance, dy / distance)
+                            }
+                        } else {
+                            // Fallback: use radial direction from center
+                            let center_x = layout.width * 0.5;
+                            let center_y = layout.height * 0.5;
+                            let dx = tip_world.0 - center_x;
+                            let dy = tip_world.1 - center_y;
+                            let distance = (dx * dx + dy * dy).sqrt().max(1e-6);
+                            (dx / distance, dy / distance)
+                        };
+
+                        let extended_world = (
+                            tip_world.0 + direction.0 * extension as f32,
+                            tip_world.1 + direction.1 * extension as f32,
+                        );
+                        to_screen(extended_world)
+                    }
+                    super::layout::TreeLayoutType::Radial |
+                    super::layout::TreeLayoutType::Daylight => {
+                        // For radial layouts, extend radially from center
+                        let center_x = layout.width * 0.5;
+                        let center_y = layout.height * 0.5;
+                        let dx = tip_world.0 - center_x;
+                        let dy = tip_world.1 - center_y;
+                        let distance = (dx * dx + dy * dy).sqrt().max(1e-6);
+                        let extended_world = (
+                            tip_world.0 + dx / distance * extension as f32,
+                            tip_world.1 + dy / distance * extension as f32,
+                        );
+                        to_screen(extended_world)
+                    }
+                };
+
+                // Draw dashed line
+                self.draw_dashed_line(painter, tip_screen, extended_pos, dashed_stroke);
+            }
+        }
+
         // Paint nodes
         for node in &tree.nodes {
             let pos = to_screen(layout.positions[node.id]);
@@ -319,12 +438,78 @@ impl TreePainter {
                         .copied()
                         .unwrap_or(self.label_color);
 
+                    // Calculate label position (extended if align_tip_labels is enabled)
+                    let label_pos = if self.align_tip_labels {
+                        if let Some(&extension) = tip_extensions.get(&node.id) {
+                            let tip_world = layout.positions[node.id];
+                            let extended_world = match layout.layout_type {
+                                super::layout::TreeLayoutType::Rectangular |
+                                super::layout::TreeLayoutType::Slanted |
+                                super::layout::TreeLayoutType::Cladogram |
+                                super::layout::TreeLayoutType::Phylogram => {
+                                    (tip_world.0 + extension as f32, tip_world.1)
+                                }
+                                super::layout::TreeLayoutType::Circular => {
+                                    // For circular layout, extend along the straight branch direction (shoulder to tip)
+                                    let direction = if let Some(branch) = layout.continuous_branches.iter().find(|b| b.child == node.id) {
+                                        if branch.points.len() >= 2 {
+                                            let child_pos = branch.points[0];
+                                            let shoulder_pos = branch.points[1];
+                                            let dx = child_pos.0 - shoulder_pos.0;
+                                            let dy = child_pos.1 - shoulder_pos.1;
+                                            let distance = (dx * dx + dy * dy).sqrt().max(1e-6);
+                                            (dx / distance, dy / distance)
+                                        } else {
+                                            // Fallback: use radial direction from center
+                                            let center_x = layout.width * 0.5;
+                                            let center_y = layout.height * 0.5;
+                                            let dx = tip_world.0 - center_x;
+                                            let dy = tip_world.1 - center_y;
+                                            let distance = (dx * dx + dy * dy).sqrt().max(1e-6);
+                                            (dx / distance, dy / distance)
+                                        }
+                                    } else {
+                                        // Fallback: use radial direction from center
+                                        let center_x = layout.width * 0.5;
+                                        let center_y = layout.height * 0.5;
+                                        let dx = tip_world.0 - center_x;
+                                        let dy = tip_world.1 - center_y;
+                                        let distance = (dx * dx + dy * dy).sqrt().max(1e-6);
+                                        (dx / distance, dy / distance)
+                                    };
+
+                                    (
+                                        tip_world.0 + direction.0 * extension as f32,
+                                        tip_world.1 + direction.1 * extension as f32,
+                                    )
+                                }
+                                super::layout::TreeLayoutType::Radial |
+                                super::layout::TreeLayoutType::Daylight => {
+                                    let center_x = layout.width * 0.5;
+                                    let center_y = layout.height * 0.5;
+                                    let dx = tip_world.0 - center_x;
+                                    let dy = tip_world.1 - center_y;
+                                    let distance = (dx * dx + dy * dy).sqrt().max(1e-6);
+                                    (
+                                        tip_world.0 + dx / distance * extension as f32,
+                                        tip_world.1 + dy / distance * extension as f32,
+                                    )
+                                }
+                            };
+                            to_screen(extended_world)
+                        } else {
+                            pos
+                        }
+                    } else {
+                        pos
+                    };
+
                     if let Some((text_rect, rotation_angle, anchor)) = self.paint_tip_label(
                         painter,
                         tree,
                         node,
                         &label,
-                        pos,
+                        label_pos,
                         layout,
                         text_color,
                         tip_selected,
@@ -929,6 +1114,100 @@ impl TreePainter {
         }
 
         (text_rect, text_rotation_angle, text_anchor)
+    }
+
+    /// Draw a dashed line between two points
+    fn draw_dashed_line(
+        &self,
+        painter: &egui::Painter,
+        start: egui::Pos2,
+        end: egui::Pos2,
+        stroke: Stroke,
+    ) {
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let length = (dx * dx + dy * dy).sqrt();
+
+        if length < 1e-6 {
+            return;
+        }
+
+        let dash_length = 5.0;
+        let gap_length = 3.0;
+        let unit_x = dx / length;
+        let unit_y = dy / length;
+
+        let mut current_dist = 0.0;
+        let mut drawing = true;
+
+        while current_dist < length {
+            let segment_length = if drawing { dash_length } else { gap_length };
+            let next_dist = (current_dist + segment_length).min(length);
+
+            if drawing {
+                let p1 = egui::pos2(
+                    start.x + unit_x * current_dist,
+                    start.y + unit_y * current_dist,
+                );
+                let p2 = egui::pos2(
+                    start.x + unit_x * next_dist,
+                    start.y + unit_y * next_dist,
+                );
+                painter.line_segment([p1, p2], stroke);
+            }
+
+            current_dist = next_dist;
+            drawing = !drawing;
+        }
+    }
+
+    /// Calculate the distance from root to each tip, and return extension needed for each tip
+    fn calculate_tip_extensions(&self, tree: &Tree) -> HashMap<NodeId, f64> {
+        let mut distances = HashMap::new();
+
+        // Calculate distance from root to each node
+        fn calculate_distances_from_root(
+            node_id: NodeId,
+            current_distance: f64,
+            tree: &Tree,
+            distances: &mut HashMap<NodeId, f64>,
+        ) {
+            distances.insert(node_id, current_distance);
+
+            let node = &tree.nodes[node_id];
+            for &child_id in &node.children {
+                let branch_length = tree.nodes[child_id].length.unwrap_or(1.0);
+                calculate_distances_from_root(child_id, current_distance + branch_length, tree, distances);
+            }
+        }
+
+        // Start from root
+        if let Some(root_id) = tree.root {
+            calculate_distances_from_root(root_id, 0.0, tree, &mut distances);
+        }
+
+        // Find maximum distance to any tip
+        let max_distance = tree
+            .nodes
+            .iter()
+            .filter(|node| node.is_leaf())
+            .filter_map(|node| distances.get(&node.id))
+            .fold(0.0f64, |a, &b| a.max(b));
+
+        // Calculate extension needed for each tip
+        let mut extensions = HashMap::new();
+        for node in &tree.nodes {
+            if node.is_leaf() {
+                if let Some(&distance) = distances.get(&node.id) {
+                    let extension = max_distance - distance;
+                    if extension > 1e-6 {  // Only add if extension is significant
+                        extensions.insert(node.id, extension);
+                    }
+                }
+            }
+        }
+
+        extensions
     }
 
 }

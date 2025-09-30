@@ -366,7 +366,16 @@ impl FigTreeGui {
     }
 
     fn draw_tree_canvas(&mut self, ui: &mut egui::Ui) {
-        if let Some(tree) = self.tree_viewer.current_tree().cloned() {
+        if let Some(mut tree) = self.tree_viewer.current_tree().cloned() {
+            // Apply branch transformation if enabled
+            if self.transform_branches_enabled {
+                match self.branch_transform {
+                    BranchTransform::Equal => tree.apply_equal_transform(),
+                    BranchTransform::Cladogram => tree.apply_cladogram_transform(),
+                    BranchTransform::Proportional => tree.apply_proportional_transform(),
+                }
+            }
+
             if let Some(layout) =
                 crate::tree::layout::TreeLayout::from_tree(&tree, self.current_layout)
                     .map(|layout| layout.with_tip_labels(
@@ -987,6 +996,26 @@ impl eframe::App for FigTreeGui {
                             egui::Slider::new(&mut self.tree_viewer.vertical_expansion, 1.0..=2.0)
                                 .show_value(false),
                         );
+
+                        // Align Tip Labels checkbox - only show for Rectangular, Circular, Slanted
+                        if matches!(
+                            self.current_layout,
+                            crate::tree::layout::TreeLayoutType::Rectangular
+                                | crate::tree::layout::TreeLayoutType::Circular
+                                | crate::tree::layout::TreeLayoutType::Slanted
+                        ) {
+                            ui.separator();
+                            let mut align_tip_labels = self.tree_painter.align_tip_labels;
+                            if ui
+                                .checkbox(&mut align_tip_labels, "Align Tip Labels")
+                                .on_hover_text(
+                                    "Extend branches with dashed lines to align all tip labels at the same position"
+                                )
+                                .changed()
+                            {
+                                self.tree_painter.align_tip_labels = align_tip_labels;
+                            }
+                        }
                     });
                 if layout_response.header_response.clicked() {
                     self.panel_states.layout_expanded = !self.panel_states.layout_expanded;
@@ -1306,19 +1335,8 @@ impl eframe::App for FigTreeGui {
                                 let increasing = matches!(self.node_ordering, NodeOrdering::Increasing);
                                 self.tree_viewer.apply_node_ordering(increasing);
                             } else if !order_enabled && previous_enabled {
-                                // Restore original order when disabling
-                                if let Some(original) = self.bundle.as_ref()
-                                    .and_then(|b| b.trees.get(self.tree_viewer.current_tree_index()))
-                                {
-                                    if let Some(current) = self.tree_viewer.current_tree_mut() {
-                                        // Restore children order from original
-                                        for i in 0..current.nodes.len() {
-                                            if i < original.nodes.len() {
-                                                current.nodes[i].children = original.nodes[i].children.clone();
-                                            }
-                                        }
-                                    }
-                                }
+                                // Restore unordered tree when disabling
+                                self.tree_viewer.restore_unordered_tree();
                             }
                         }
 
@@ -1383,7 +1401,6 @@ impl eframe::App for FigTreeGui {
                             });
                             if transform != self.branch_transform {
                                 self.branch_transform = transform;
-                                // TODO: Apply transform logic
                             }
                         });
                     });

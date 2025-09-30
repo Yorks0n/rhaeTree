@@ -34,6 +34,7 @@ pub struct TreeViewer {
     trees: Vec<Tree>,
     original_trees: Vec<Tree>, // Store original trees for rerooting
     rooted_trees: Vec<Option<Tree>>, // Store rerooted versions
+    unordered_trees: Vec<Option<Tree>>, // Store trees before ordering
     current_tree_index: usize,
     selected_nodes: HashSet<NodeId>,
     selected_tips: HashSet<NodeId>,
@@ -54,6 +55,7 @@ impl TreeViewer {
             trees: Vec::new(),
             original_trees: Vec::new(),
             rooted_trees: Vec::new(),
+            unordered_trees: Vec::new(),
             current_tree_index: 0,
             selected_nodes: HashSet::new(),
             selected_tips: HashSet::new(),
@@ -66,6 +68,7 @@ impl TreeViewer {
     pub fn set_trees(&mut self, trees: Vec<Tree>) {
         self.original_trees = trees.clone();
         self.rooted_trees = vec![None; trees.len()];
+        self.unordered_trees = vec![None; trees.len()];
         self.trees = trees;
         self.current_tree_index = 0;
         self.clear_selection();
@@ -74,6 +77,7 @@ impl TreeViewer {
     pub fn add_tree(&mut self, tree: Tree) {
         self.original_trees.push(tree.clone());
         self.rooted_trees.push(None);
+        self.unordered_trees.push(None);
         self.trees.push(tree);
     }
 
@@ -415,6 +419,8 @@ impl TreeViewer {
                 // Store the rooted tree
                 self.rooted_trees[self.current_tree_index] = Some(rooted.clone());
                 self.trees[self.current_tree_index] = rooted;
+                // Clear unordered tree state since tree structure changed
+                self.unordered_trees[self.current_tree_index] = None;
                 self.clear_selection();
             }
         }
@@ -468,6 +474,8 @@ impl TreeViewer {
 
             if tree.nodes.get(new_root).is_some() {
                 Self::reroot_tree(tree, new_root, &adjacency, &edge_lengths);
+                // Clear unordered tree state since tree structure changed
+                self.unordered_trees[self.current_tree_index] = None;
                 self.clear_selection();
             }
         }
@@ -821,8 +829,33 @@ impl TreeViewer {
     /// Apply node ordering to the current tree
     /// If `increasing` is true, smaller clades come first; otherwise larger clades come first
     pub fn apply_node_ordering(&mut self, increasing: bool) {
+        // Save current tree before ordering if not already saved
+        if self.unordered_trees.get(self.current_tree_index).map_or(true, |t| t.is_none()) {
+            if let Some(tree) = self.trees.get(self.current_tree_index).cloned() {
+                if self.current_tree_index < self.unordered_trees.len() {
+                    self.unordered_trees[self.current_tree_index] = Some(tree);
+                }
+            }
+        }
+
+        // Apply ordering
         if let Some(tree) = self.trees.get_mut(self.current_tree_index) {
             tree.order_nodes(increasing);
+        }
+    }
+
+    /// Restore tree to unordered state
+    pub fn restore_unordered_tree(&mut self) {
+        if let Some(Some(unordered)) = self.unordered_trees.get(self.current_tree_index).cloned() {
+            self.trees[self.current_tree_index] = unordered;
+            self.unordered_trees[self.current_tree_index] = None;
+        }
+    }
+
+    /// Clear the saved unordered tree state
+    pub fn clear_unordered_tree(&mut self) {
+        if self.current_tree_index < self.unordered_trees.len() {
+            self.unordered_trees[self.current_tree_index] = None;
         }
     }
 }
