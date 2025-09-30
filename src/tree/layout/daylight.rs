@@ -2,16 +2,26 @@ use super::{normalize_positions, NodeId, Tree, TreeLayout, TreeLayoutType, DEFAU
 use std::collections::VecDeque;
 
 const DAYLIGHT_MAX_ITERATIONS: usize = 5;
-const DAYLIGHT_MIN_AVG_CHANGE: f32 = 0.05 * std::f32::consts::PI;
+const DAYLIGHT_MIN_AVG_CHANGE: f32 = 0.05;
 const ANGLE_EPSILON: f32 = 1e-6;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct DaylightNode {
-    start_angle: f32,
-    end_angle: f32,
+    x: f32,
+    y: f32,
     radius: f32,
-    min_tip_angle: f32,
-    max_tip_angle: f32,
+    angle: f32,
+    left_angle: f32,
+    right_angle: f32,
+    subtree_arc: f32,
+}
+
+#[derive(Debug, Clone)]
+struct SubtreeInfo {
+    subtree_id: usize,
+    left_angle: f32,
+    beta: f32,  // arc angle occupied by subtree
+    nodes: Vec<NodeId>,
 }
 
 pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
@@ -32,17 +42,19 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
     let mut leaf_counts = vec![0usize; node_count];
     compute_leaf_counts(tree, root_id, &mut leaf_counts);
 
+    // Step 1: Initialize with equal angle (radial) layout
     let mut geometry = vec![DaylightNode::default(); node_count];
-    initialize_daylight_geometry(
+    initialize_equal_angle(
         tree,
         root_id,
         0.0,
-        0.0,
         std::f32::consts::TAU,
+        (0.0, 0.0),
         &mut geometry,
         &leaf_counts,
     );
 
+    // Step 2: Apply daylight algorithm iteratively
     let breadth_first = breadth_first_nodes(tree, root_id);
     let internal_nodes: Vec<NodeId> = breadth_first
         .into_iter()
@@ -50,10 +62,10 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
         .collect();
 
     if !internal_nodes.is_empty() {
-        for _ in 0..DAYLIGHT_MAX_ITERATIONS {
+        for iteration in 0..DAYLIGHT_MAX_ITERATIONS {
             let mut total_change = 0.0f32;
             for node_id in &internal_nodes {
-                total_change += apply_daylight_adjustment(tree, *node_id, &mut geometry);
+                total_change += apply_daylight_to_node(tree, *node_id, &mut geometry);
             }
 
             let average_change = total_change / internal_nodes.len() as f32;
@@ -63,16 +75,10 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
         }
     }
 
+    // Step 3: Extract final positions
     for (node_id, geom) in geometry.iter().enumerate() {
-        let mid_angle = (geom.start_angle + geom.end_angle) * 0.5;
-        let radius = geom.radius;
-        if radius <= ANGLE_EPSILON {
-            positions[node_id] = (0.0, 0.0);
-        } else {
-            positions[node_id] = (radius * mid_angle.cos(), radius * mid_angle.sin());
-        }
+        positions[node_id] = (geom.x, geom.y);
     }
-
 
     let (width, height) = normalize_positions(&mut positions);
 
@@ -105,78 +111,130 @@ fn compute_leaf_counts(tree: &Tree, node_id: NodeId, counts: &mut [usize]) -> us
     }
 }
 
-fn initialize_daylight_geometry(
+fn initialize_equal_angle(
     tree: &Tree,
     node_id: NodeId,
-    parent_radius: f32,
     start_angle: f32,
     end_angle: f32,
+    parent_position: (f32, f32),
     geometry: &mut [DaylightNode],
     leaf_counts: &[usize],
 ) {
     let node = &tree.nodes[node_id];
-    let radius = if node.parent.is_some() {
-        let branch_length = node
-            .length
-            .map(|value| value as f32)
-            .unwrap_or(DEFAULT_BRANCH_LENGTH);
-        parent_radius + branch_length
+
+    let mut span = end_angle - start_angle;
+    if span <= ANGLE_EPSILON {
+        span = std::f32::consts::TAU;
+    }
+
+    let mid_angle = start_angle + span * 0.5;
+    let branch_length = node
+        .length
+        .map(|value| value as f32)
+        .unwrap_or(if node.parent.is_some() {
+            DEFAULT_BRANCH_LENGTH
+        } else {
+            0.0
+        });
+
+    let direction = (mid_angle.cos(), mid_angle.sin());
+    let position = if node.parent.is_some() {
+        (
+            parent_position.0 + branch_length * direction.0,
+            parent_position.1 + branch_length * direction.1,
+        )
     } else {
-        0.0
+        parent_position
     };
 
+    let radius = (position.0 * position.0 + position.1 * position.1).sqrt();
+
     geometry[node_id] = DaylightNode {
-        start_angle,
-        end_angle,
+        x: position.0,
+        y: position.1,
         radius,
-        min_tip_angle: 0.0,
-        max_tip_angle: 0.0,
+        angle: mid_angle,
+        left_angle: start_angle,
+        right_angle: end_angle,
+        subtree_arc: 0.0,
     };
 
     if node.children.is_empty() {
-        let mid = (start_angle + end_angle) * 0.5;
-        geometry[node_id].min_tip_angle = mid;
-        geometry[node_id].max_tip_angle = mid;
+        geometry[node_id].subtree_arc = 0.0;
         return;
     }
 
-    let span = (end_angle - start_angle).max(ANGLE_EPSILON);
-    let total_leaves = leaf_counts[node_id].max(1) as f32;
+    let total_leaves: usize = node.children
+        .iter()
+        .map(|&child| leaf_counts[child].max(1))
+        .sum::<usize>()
+        .max(1);
 
-    let mut current_start = start_angle;
-    let mut min_tip = f32::INFINITY;
-    let mut max_tip = f32::NEG_INFINITY;
+    let mut current_angle = start_angle;
     for &child_id in &node.children {
-        let fraction = leaf_counts[child_id].max(1) as f32 / total_leaves;
+        let fraction = leaf_counts[child_id].max(1) as f32 / total_leaves as f32;
         let child_span = span * fraction;
-        let child_start = current_start;
-        let child_end = child_start + child_span;
+        let child_start = current_angle;
+        let child_end = current_angle + child_span;
 
-        initialize_daylight_geometry(
+        initialize_equal_angle(
             tree,
             child_id,
-            radius,
             child_start,
             child_end,
+            position,
             geometry,
             leaf_counts,
         );
 
-        current_start += child_span;
-
-        let child_geom = geometry[child_id];
-        min_tip = min_tip.min(child_geom.min_tip_angle);
-        max_tip = max_tip.max(child_geom.max_tip_angle);
+        current_angle = child_end;
     }
 
-    if !min_tip.is_finite() || !max_tip.is_finite() {
-        let mid = (start_angle + end_angle) * 0.5;
-        min_tip = mid;
-        max_tip = mid;
+    // Calculate subtree arc for internal nodes
+    geometry[node_id].subtree_arc = calculate_subtree_arc(tree, node_id, geometry);
+}
+
+fn calculate_subtree_arc(tree: &Tree, node_id: NodeId, geometry: &[DaylightNode]) -> f32 {
+    let node = &tree.nodes[node_id];
+    if node.children.is_empty() {
+        return 0.0;
     }
 
-    geometry[node_id].min_tip_angle = min_tip;
-    geometry[node_id].max_tip_angle = max_tip;
+    let mut min_angle = f32::INFINITY;
+    let mut max_angle = f32::NEG_INFINITY;
+
+    collect_tip_angles(tree, node_id, geometry, &mut min_angle, &mut max_angle);
+
+    if min_angle.is_finite() && max_angle.is_finite() {
+        let mut arc = max_angle - min_angle;
+        if arc < 0.0 {
+            arc += std::f32::consts::TAU;
+        }
+        arc
+    } else {
+        0.0
+    }
+}
+
+fn collect_tip_angles(
+    tree: &Tree,
+    node_id: NodeId,
+    geometry: &[DaylightNode],
+    min_angle: &mut f32,
+    max_angle: &mut f32,
+) {
+    let node = &tree.nodes[node_id];
+    if node.children.is_empty() {
+        // This is a tip
+        let angle = geometry[node_id].angle;
+        *min_angle = min_angle.min(angle);
+        *max_angle = max_angle.max(angle);
+    } else {
+        // Recurse to children
+        for &child in &node.children {
+            collect_tip_angles(tree, child, geometry, min_angle, max_angle);
+        }
+    }
 }
 
 fn breadth_first_nodes(tree: &Tree, root_id: NodeId) -> Vec<NodeId> {
@@ -194,84 +252,122 @@ fn breadth_first_nodes(tree: &Tree, root_id: NodeId) -> Vec<NodeId> {
     order
 }
 
-fn apply_daylight_adjustment(tree: &Tree, node_id: NodeId, geometry: &mut [DaylightNode]) -> f32 {
+fn apply_daylight_to_node(tree: &Tree, node_id: NodeId, geometry: &mut [DaylightNode]) -> f32 {
     let node = &tree.nodes[node_id];
-    let child_count = node.children.len();
-    if child_count <= 1 {
-        return 0.0;
+    if node.children.len() <= 2 {
+        return 0.0; // Need at least 3 subtrees to apply daylight
     }
 
-    let parent_geom = geometry[node_id];
-    let mut child_spans = Vec::with_capacity(child_count);
-    for &child_id in &node.children {
-        let geom = geometry[child_id];
-        let span = (geom.max_tip_angle - geom.min_tip_angle).max(ANGLE_EPSILON);
-        child_spans.push(span);
-    }
-
-    let total_span: f32 = child_spans.iter().copied().sum();
-    let mut available = parent_geom.end_angle - parent_geom.start_angle - total_span;
-    if available < 0.0 {
-        available = 0.0;
-    }
-
-    let gap = if available > 0.0 {
-        available / child_count as f32
-    } else {
-        0.0
-    };
-
-    let mut current = parent_geom.start_angle;
-    let mut max_change = 0.0f32;
+    // Get subtree information for each child
+    let mut subtrees = Vec::new();
     for (index, &child_id) in node.children.iter().enumerate() {
-        current += gap * 0.5;
-        let span = child_spans[index];
-        let new_start = current;
-        let new_end = new_start + span;
-        current = new_end + gap * 0.5;
+        let nodes = collect_subtree_nodes(tree, child_id);
+        let (left_angle, right_angle) = get_subtree_arc_angles(geometry, &nodes);
 
-        let old_geom = geometry[child_id];
-        let old_mid = (old_geom.start_angle + old_geom.end_angle) * 0.5;
-        let new_mid = (new_start + new_end) * 0.5;
-        let delta = new_mid - old_mid;
-
-        if delta.abs() > ANGLE_EPSILON {
-            rotate_subtree(tree, child_id, delta, geometry);
+        let mut beta = left_angle - right_angle;
+        if beta < 0.0 {
+            beta += std::f32::consts::TAU;
         }
 
-        geometry[child_id].start_angle = new_start;
-        geometry[child_id].end_angle = new_end;
-
-        max_change = max_change.max(delta.abs());
+        subtrees.push(SubtreeInfo {
+            subtree_id: index,
+            left_angle,
+            beta,
+            nodes,
+        });
     }
 
-    if let (Some(first_child), Some(last_child)) = (
-        node.children.first().copied(),
-        node.children.last().copied(),
-    ) {
-        geometry[node_id].min_tip_angle = geometry[first_child].min_tip_angle;
-        geometry[node_id].max_tip_angle = geometry[last_child].max_tip_angle;
+    // Sort by left angle
+    subtrees.sort_by(|a, b| a.left_angle.partial_cmp(&b.left_angle).unwrap());
+
+    // Calculate total daylight and equal daylight per subtree
+    let total_beta: f32 = subtrees.iter().map(|s| s.beta).sum();
+    let total_daylight = std::f32::consts::TAU - total_beta;
+    let equal_daylight = total_daylight / subtrees.len() as f32;
+
+    // Apply adjustments
+    let mut new_left_angle = subtrees[0].left_angle;
+    let mut max_change = 0.0f32;
+
+    // Skip first subtree, adjust others
+    for i in 1..subtrees.len() {
+        new_left_angle += equal_daylight + subtrees[i - 1].beta;
+        let adjust_angle = new_left_angle - subtrees[i].left_angle;
+
+        max_change = max_change.max(adjust_angle.abs());
+
+        if adjust_angle.abs() > ANGLE_EPSILON {
+            rotate_subtree_nodes(geometry, &subtrees[i].nodes, node_id, adjust_angle);
+        }
     }
 
     max_change
 }
 
-fn rotate_subtree(tree: &Tree, node_id: NodeId, delta: f32, geometry: &mut [DaylightNode]) {
-    if delta.abs() <= ANGLE_EPSILON {
-        return;
+fn collect_subtree_nodes(tree: &Tree, root_id: NodeId) -> Vec<NodeId> {
+    let mut nodes = Vec::new();
+    let mut queue = VecDeque::new();
+    queue.push_back(root_id);
+
+    while let Some(node_id) = queue.pop_front() {
+        nodes.push(node_id);
+        for &child in &tree.nodes[node_id].children {
+            queue.push_back(child);
+        }
     }
 
-    rotate_subtree_inner(tree, node_id, delta, geometry);
+    nodes
 }
 
-fn rotate_subtree_inner(tree: &Tree, node_id: NodeId, delta: f32, geometry: &mut [DaylightNode]) {
-    let geom = &mut geometry[node_id];
-    geom.start_angle += delta;
-    geom.end_angle += delta;
-    geom.min_tip_angle += delta;
-    geom.max_tip_angle += delta;
+fn get_subtree_arc_angles(geometry: &[DaylightNode], nodes: &[NodeId]) -> (f32, f32) {
+    let mut min_angle = f32::INFINITY;
+    let mut max_angle = f32::NEG_INFINITY;
 
-    for &child in &tree.nodes[node_id].children {
-        rotate_subtree_inner(tree, child, delta, geometry);
+    for &node_id in nodes {
+        let angle = geometry[node_id].angle;
+        min_angle = min_angle.min(angle);
+        max_angle = max_angle.max(angle);
+    }
+
+    if min_angle.is_finite() && max_angle.is_finite() {
+        (max_angle, min_angle) // left is max, right is min
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+fn rotate_subtree_nodes(
+    geometry: &mut [DaylightNode],
+    nodes: &[NodeId],
+    pivot_id: NodeId,
+    delta_angle: f32,
+) {
+    let pivot = geometry[pivot_id];
+    let pivot_pos = (pivot.x, pivot.y);
+
+    for &node_id in nodes {
+        let old_geom = &mut geometry[node_id];
+
+        // Calculate relative position from pivot
+        let rel_x = old_geom.x - pivot_pos.0;
+        let rel_y = old_geom.y - pivot_pos.1;
+
+        // Rotate around pivot
+        let cos_delta = delta_angle.cos();
+        let sin_delta = delta_angle.sin();
+        let new_rel_x = rel_x * cos_delta - rel_y * sin_delta;
+        let new_rel_y = rel_x * sin_delta + rel_y * cos_delta;
+
+        // Update position
+        old_geom.x = pivot_pos.0 + new_rel_x;
+        old_geom.y = pivot_pos.1 + new_rel_y;
+
+        // Update angle
+        old_geom.angle += delta_angle;
+        old_geom.left_angle += delta_angle;
+        old_geom.right_angle += delta_angle;
+
+        // Update radius (should remain the same, but recalculate for precision)
+        old_geom.radius = (old_geom.x * old_geom.x + old_geom.y * old_geom.y).sqrt();
     }
 }

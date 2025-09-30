@@ -34,6 +34,10 @@ pub struct FigTreeGui {
     root_tree_enabled: bool,
     root_method: RootMethod,
     user_root_snapshot: Option<TreeSnapshot>,
+    order_nodes_enabled: bool,
+    node_ordering: NodeOrdering,
+    transform_branches_enabled: bool,
+    branch_transform: BranchTransform,
 }
 
 #[derive(Default)]
@@ -76,6 +80,38 @@ enum FilterMode {
     EndsWith,
     Matches,
     Regex,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum NodeOrdering {
+    Increasing,
+    Decreasing,
+}
+
+impl NodeOrdering {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Increasing => "increasing",
+            Self::Decreasing => "decreasing",
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum BranchTransform {
+    Equal,
+    Cladogram,
+    Proportional,
+}
+
+impl BranchTransform {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Equal => "equal",
+            Self::Cladogram => "cladogram",
+            Self::Proportional => "proportional",
+        }
+    }
 }
 
 impl FilterMode {
@@ -147,6 +183,10 @@ impl FigTreeGui {
             root_tree_enabled: false,
             root_method: RootMethod::UserSelection,
             user_root_snapshot: None,
+            order_nodes_enabled: false,
+            node_ordering: NodeOrdering::Increasing,
+            transform_branches_enabled: false,
+            branch_transform: BranchTransform::Proportional,
         };
 
         if let Some(path) = app.config.tree_path.clone() {
@@ -389,8 +429,8 @@ impl FigTreeGui {
                 };
                 let to_screen = |pos: (f32, f32)| -> egui::Pos2 {
                     match self.current_layout {
-                        crate::tree::layout::TreeLayoutType::Circular | crate::tree::layout::TreeLayoutType::Radial => {
-                            // 对于圆形和径向布局，使用统一的缩放因子保持形状
+                        crate::tree::layout::TreeLayoutType::Circular | crate::tree::layout::TreeLayoutType::Radial | crate::tree::layout::TreeLayoutType::Daylight => {
+                            // 对于圆形、径向和Daylight布局，使用统一的缩放因子保持形状
                             let available_radius = inner.width().min(inner.height()) * 0.45;
                             let layout_radius = (layout.width.max(layout.height) * 0.5).max(1e-6);
                             let scale = available_radius / layout_radius;
@@ -886,6 +926,11 @@ impl eframe::App for FigTreeGui {
             .show(ctx, |ui| {
                 ui.heading("Controls");
 
+                // Add scroll area for the control panels
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+
                 // Layout Panel (expanded by default)
                 let layout_response = egui::CollapsingHeader::new("Layout")
                     .default_open(self.panel_states.layout_expanded)
@@ -1247,6 +1292,77 @@ impl eframe::App for FigTreeGui {
                             self.root_method = method;
                             self.apply_root_configuration(Some(previous_method));
                         }
+
+                        ui.separator();
+
+                        // Order nodes checkbox and combobox
+                        let mut order_enabled = self.order_nodes_enabled;
+                        if ui.checkbox(&mut order_enabled, "Order nodes").changed() {
+                            self.order_nodes_enabled = order_enabled;
+                        }
+
+                        ui.horizontal(|ui| {
+                            ui.label("Ordering:");
+                            let mut ordering = self.node_ordering;
+                            ui.add_enabled_ui(self.order_nodes_enabled, |ui| {
+                                egui::ComboBox::from_id_salt("node_ordering")
+                                    .selected_text(ordering.label())
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut ordering,
+                                            NodeOrdering::Increasing,
+                                            NodeOrdering::Increasing.label(),
+                                        );
+                                        ui.selectable_value(
+                                            &mut ordering,
+                                            NodeOrdering::Decreasing,
+                                            NodeOrdering::Decreasing.label(),
+                                        );
+                                    });
+                            });
+                            if ordering != self.node_ordering {
+                                self.node_ordering = ordering;
+                                // TODO: Apply ordering logic
+                            }
+                        });
+
+                        ui.separator();
+
+                        // Transform branches checkbox and combobox
+                        let mut transform_enabled = self.transform_branches_enabled;
+                        if ui.checkbox(&mut transform_enabled, "Transform branches").changed() {
+                            self.transform_branches_enabled = transform_enabled;
+                        }
+
+                        ui.horizontal(|ui| {
+                            ui.label("Transform:");
+                            let mut transform = self.branch_transform;
+                            ui.add_enabled_ui(self.transform_branches_enabled, |ui| {
+                                egui::ComboBox::from_id_salt("branch_transform")
+                                    .selected_text(transform.label())
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut transform,
+                                            BranchTransform::Equal,
+                                            BranchTransform::Equal.label(),
+                                        );
+                                        ui.selectable_value(
+                                            &mut transform,
+                                            BranchTransform::Cladogram,
+                                            BranchTransform::Cladogram.label(),
+                                        );
+                                        ui.selectable_value(
+                                            &mut transform,
+                                            BranchTransform::Proportional,
+                                            BranchTransform::Proportional.label(),
+                                        );
+                                    });
+                            });
+                            if transform != self.branch_transform {
+                                self.branch_transform = transform;
+                                // TODO: Apply transform logic
+                            }
+                        });
                     });
                 if trees_response.header_response.clicked() {
                     self.panel_states.trees_expanded = !self.panel_states.trees_expanded;
@@ -1272,6 +1388,7 @@ impl eframe::App for FigTreeGui {
 
                 ui.separator();
                 ui.toggle_value(&mut self.config.fast_mode, "Fast mode");
+                    }); // End of ScrollArea
             });
 
         // Main area for tree display (wide)

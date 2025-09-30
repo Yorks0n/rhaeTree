@@ -163,8 +163,8 @@ impl TreePainter {
 
         let to_screen = |pos: (f32, f32)| -> egui::Pos2 {
             match layout.layout_type {
-                super::layout::TreeLayoutType::Circular | super::layout::TreeLayoutType::Radial => {
-                    // 对于圆形和径向布局，使用统一的缩放因子保持形状
+                super::layout::TreeLayoutType::Circular | super::layout::TreeLayoutType::Radial | super::layout::TreeLayoutType::Daylight => {
+                    // 对于圆形、径向和Daylight布局，使用统一的缩放因子保持形状
                     // 计算画布内切圆的最大可用半径
                     let available_radius = inner.width().min(inner.height()) * 0.45; // 留10%边距
                     let layout_radius = (layout.width.max(layout.height) * 0.5).max(1e-6);
@@ -565,8 +565,8 @@ impl TreePainter {
                 );
                 Some((rect, angle, anchor))
             }
-            super::layout::TreeLayoutType::Radial => {
-                // Radial布局使用从Internal Node到Tip的方向
+            super::layout::TreeLayoutType::Radial | super::layout::TreeLayoutType::Daylight => {
+                // Radial和Daylight布局使用从Internal Node到Tip的方向
                 let (rect, angle, anchor) = self.paint_radial_tip_label(
                     painter, tree, node, label, node_pos, layout, text_color, is_selected, font_id,
                 );

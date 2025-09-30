@@ -256,8 +256,8 @@ impl TreeLayout {
                 let angle = self.calculate_circular_label_angle(tree, node);
                 self.calculate_rotated_label_bounds_simple(node_screen_pos, text_width, text_height, angle, 8.0) // Reduced offset
             }
-            TreeLayoutType::Radial => {
-                // Calculate bounds for radial layout with rotation
+            TreeLayoutType::Radial | TreeLayoutType::Daylight => {
+                // Calculate bounds for radial and daylight layout with rotation
                 let angle = self.calculate_radial_label_angle(tree, node);
                 self.calculate_rotated_label_bounds_simple(node_screen_pos, text_width, text_height, angle, 6.0) // Reduced offset
             }
@@ -705,5 +705,26 @@ mod tests {
         // Should remain the same size
         assert_eq!(layout_no_labels.width, original_width);
         assert_eq!(layout_no_labels.height, original_height);
+    }
+
+    #[test]
+    fn test_daylight_layout() {
+        let tree = create_test_tree();
+        let layout = TreeLayout::from_tree(&tree, TreeLayoutType::Daylight).unwrap();
+
+        assert!(layout.width > 0.0);
+        assert!(layout.height > 0.0);
+        assert_eq!(layout.leaf_count, 2);
+        assert_eq!(layout.positions.len(), 3);
+        assert_eq!(layout.edges.len(), 2);
+        assert_eq!(layout.layout_type, TreeLayoutType::Daylight);
+
+        // Daylight layout should have positions within bounds
+        for pos in &layout.positions {
+            assert!(pos.0 >= -1e-3);
+            assert!(pos.0 <= layout.width + 1e-3);
+            assert!(pos.1 >= -1e-3);
+            assert!(pos.1 <= layout.height + 1e-3);
+        }
     }
 }
