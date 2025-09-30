@@ -52,7 +52,6 @@ pub struct PanelStates {
     node_shapes_expanded: bool,
     node_bars_expanded: bool,
     trees_expanded: bool,
-    transform_expanded: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -175,7 +174,6 @@ impl FigTreeGui {
                 node_shapes_expanded: false,
                 node_bars_expanded: false,
                 trees_expanded: true,
-                transform_expanded: true,
             },
             color_picker_open: false,
             color_picker_hex_input: String::new(),
@@ -1390,18 +1388,6 @@ impl eframe::App for FigTreeGui {
                             });
                         }
 
-                        // Selection info
-                        if self.tree_viewer.has_selection() {
-                            ui.label(format!(
-                                "Selected: {} nodes, {} tips",
-                                self.tree_viewer.selected_nodes().len(),
-                                self.tree_viewer.selected_tips().len()
-                            ));
-                            if ui.button("Clear Selection").clicked() {
-                                self.tree_viewer.clear_selection();
-                            }
-                        }
-
                         let mut root_enabled = self.root_tree_enabled;
                         if ui.checkbox(&mut root_enabled, "Root tree").changed() {
                             self.root_tree_enabled = root_enabled;
@@ -1524,24 +1510,6 @@ impl eframe::App for FigTreeGui {
                     });
                 if trees_response.header_response.clicked() {
                     self.panel_states.trees_expanded = !self.panel_states.trees_expanded;
-                }
-
-                // Transform Panel
-                let transform_response = egui::CollapsingHeader::new("Transform")
-                    .default_open(self.panel_states.transform_expanded)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if ui.button("Midpoint Root").clicked() {
-                                self.tree_viewer.midpoint_root();
-                            }
-                            if ui.button("Reset").clicked() {
-                                self.tree_viewer.zoom = 1.0;
-                                self.tree_viewer.vertical_expansion = 1.0;
-                            }
-                        });
-                    });
-                if transform_response.header_response.clicked() {
-                    self.panel_states.transform_expanded = !self.panel_states.transform_expanded;
                 }
 
                 ui.separator();

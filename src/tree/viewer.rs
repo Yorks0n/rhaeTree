@@ -59,7 +59,7 @@ impl TreeViewer {
             current_tree_index: 0,
             selected_nodes: HashSet::new(),
             selected_tips: HashSet::new(),
-            selection_mode: SelectionMode::Taxa,
+            selection_mode: SelectionMode::Nodes,
             zoom: 1.0,
             vertical_expansion: 1.0,
         }
