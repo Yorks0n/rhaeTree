@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Command;
 
 use eframe::egui::collapsing_header::{paint_default_icon, CollapsingState};
 use eframe::egui::{self, color_picker, Color32};
@@ -622,6 +623,154 @@ impl FigTreeGui {
 
 impl eframe::App for FigTreeGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Menu bar
+        egui::TopBottomPanel::top("menu_bar")
+            .show(ctx, |ui| {
+                egui::menu::bar(ui, |ui| {
+                    ui.menu_button("File", |ui| {
+                        if ui.button("New").clicked() {
+                            // Spawn a new instance of the application
+                            if let Ok(exe_path) = std::env::current_exe() {
+                                match Command::new(exe_path).spawn() {
+                                    Ok(_) => {
+                                        info!("Successfully spawned new application instance");
+                                        self.status = "New window opened.".to_string();
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to spawn new instance: {}", e);
+                                        self.last_error = Some(format!("Failed to open new window: {}", e));
+                                    }
+                                }
+                            } else {
+                                error!("Failed to get current executable path");
+                                self.last_error = Some("Failed to get executable path".to_string());
+                            }
+                            ui.close();
+                        }
+
+                        if ui.button("Open...").clicked() {
+                            self.open_file_dialog();
+                            ui.close();
+                        }
+
+                        let has_tree = self.config.tree_path.is_some();
+                        if ui.add_enabled(has_tree, egui::Button::new("Reload")).clicked() {
+                            if let Some(path) = self.config.tree_path.clone() {
+                                if let Err(err) = self.load_from_path(path) {
+                                    self.last_error = Some(err);
+                                }
+                            }
+                            ui.close();
+                        }
+
+                        ui.separator();
+
+                        if ui.button("Close").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+
+                        if ui.add_enabled(false, egui::Button::new("Save")).clicked() {
+                            // TODO: Save current tree
+                            ui.close();
+                        }
+
+                        if ui.add_enabled(false, egui::Button::new("Save As...")).clicked() {
+                            // TODO: Save tree with new name
+                            ui.close();
+                        }
+
+                        if ui.add_enabled(false, egui::Button::new("Import Annotations...")).clicked() {
+                            // TODO: Import annotations
+                            ui.close();
+                        }
+
+                        if ui.add_enabled(false, egui::Button::new("Import Colour Scheme...")).clicked() {
+                            // TODO: Import colour scheme
+                            ui.close();
+                        }
+
+                        ui.separator();
+
+                        if ui.add_enabled(false, egui::Button::new("Export Trees...")).clicked() {
+                            // TODO: Export trees
+                            ui.close();
+                        }
+
+                        if ui.add_enabled(false, egui::Button::new("Export PDF")).clicked() {
+                            // TODO: Export as PDF
+                            ui.close();
+                        }
+
+                        if ui.add_enabled(false, egui::Button::new("Export SVG")).clicked() {
+                            // TODO: Export as SVG
+                            ui.close();
+                        }
+
+                        if ui.add_enabled(false, egui::Button::new("Export PNG")).clicked() {
+                            // TODO: Export as PNG
+                            ui.close();
+                        }
+
+                        if ui.add_enabled(false, egui::Button::new("Export JPEG")).clicked() {
+                            // TODO: Export as JPEG
+                            ui.close();
+                        }
+                    });
+
+                    ui.menu_button("Edit", |ui| {
+                        if ui.button("Clear Selection").clicked() {
+                            self.tree_viewer.clear_selection();
+                            ui.close();
+                            ctx.request_repaint();
+                        }
+                    });
+
+                    ui.menu_button("Tree", |ui| {
+                        let branch_target = self.selected_branch_node();
+                        if ui.add_enabled(branch_target.is_some(), egui::Button::new("Reroot...")).clicked() {
+                            if let Some(target) = branch_target {
+                                self.tree_viewer.reroot_at_node(target);
+                                self.color_picker_open = false;
+                                self.color_picker_popup_open = false;
+                                self.color_picker_popup_rect = None;
+                                self.color_picker_origin = None;
+                                if let Some(tree) = self.tree_viewer.current_tree() {
+                                    if let Some(node) = tree.nodes.get(target) {
+                                        let label = node
+                                            .name
+                                            .clone()
+                                            .unwrap_or_else(|| format!("Node {}", target));
+                                        self.status = format!("Re-rooted tree at {label}.");
+                                    }
+                                }
+                                ui.close();
+                                ctx.request_repaint();
+                            }
+                        }
+
+                        ui.separator();
+
+                        if ui.button("Order Increasing").clicked() {
+                            if let Some(tree) = self.tree_viewer.current_tree_mut() {
+                                tree.order_nodes(true);
+                                self.status = "Ordered nodes by increasing clade size.".to_string();
+                                ui.close();
+                                ctx.request_repaint();
+                            }
+                        }
+
+                        if ui.button("Order Decreasing").clicked() {
+                            if let Some(tree) = self.tree_viewer.current_tree_mut() {
+                                tree.order_nodes(false);
+                                self.status = "Ordered nodes by decreasing clade size.".to_string();
+                                ui.close();
+                                ctx.request_repaint();
+                            }
+                        }
+                    });
+                });
+            });
+
         // Minimal top menu with only file operations
         egui::TopBottomPanel::top("figtree_menu")
             .min_height(28.0)

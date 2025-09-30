@@ -91,11 +91,9 @@ pub struct FigTreeApp;
 
 impl FigTreeApp {
     pub fn run(config: &AppConfig) -> Result<()> {
-        if config.headless {
-            return Self::run_headless(config);
-        }
+        // Default to GUI mode unless explicitly headless
+        let wants_gui = !config.headless || config.gui || config.force_gui;
 
-        let wants_gui = config.gui || config.force_gui;
         if !wants_gui {
             return Self::run_headless(config);
         }
