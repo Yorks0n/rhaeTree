@@ -402,6 +402,118 @@ impl FigTreeGui {
         }
     }
 
+    fn export_svg_dialog(&mut self) {
+        if let Some(path) = FileDialog::new()
+            .add_filter("SVG Image", &["svg"])
+            .set_file_name("tree.svg")
+            .save_file()
+        {
+            // For SVG, we export directly without screenshot
+            self.export_vector_format(&path, ExportFormat::Svg);
+        }
+    }
+
+    fn export_pdf_dialog(&mut self) {
+        if let Some(path) = FileDialog::new()
+            .add_filter("PDF Document", &["pdf"])
+            .set_file_name("tree.pdf")
+            .save_file()
+        {
+            // For PDF, we export directly without screenshot
+            self.export_vector_format(&path, ExportFormat::Pdf);
+        }
+    }
+
+    fn export_vector_format(&mut self, path: &std::path::Path, format: ExportFormat) {
+        // Get current tree and layout
+        if let Some(mut tree) = self.tree_viewer.current_tree().cloned() {
+            // Apply branch transformation if enabled
+            if self.transform_branches_enabled {
+                match self.branch_transform {
+                    BranchTransform::Equal => tree.apply_equal_transform(),
+                    BranchTransform::Cladogram => tree.apply_cladogram_transform(),
+                    BranchTransform::Proportional => tree.apply_proportional_transform(),
+                }
+            }
+
+            if let Some(layout) = crate::tree::layout::TreeLayout::from_tree(&tree, self.current_layout)
+                .map(|layout| layout.with_tip_labels(
+                    &tree,
+                    self.tree_painter.show_tip_labels,
+                    self.tree_painter.tip_label_font_size,
+                    self.tree_painter.tip_label_font_family.into_font_family(),
+                ))
+            {
+                // Apply zoom and expansion effects (only for Rectangular and Slanted layouts)
+                let expansion = if matches!(
+                    self.current_layout,
+                    crate::tree::layout::TreeLayoutType::Rectangular
+                        | crate::tree::layout::TreeLayoutType::Slanted
+                ) {
+                    self.tree_viewer.vertical_expansion()
+                } else {
+                    1.0
+                };
+
+                let zoom = if matches!(
+                    self.current_layout,
+                    crate::tree::layout::TreeLayoutType::Rectangular
+                        | crate::tree::layout::TreeLayoutType::Slanted
+                ) {
+                    self.tree_viewer.zoom.max(1.0)
+                } else {
+                    1.0
+                };
+
+                // Base dimensions for export
+                let base_width = 1200.0;
+                let base_height = 900.0;
+
+                // Apply zoom and expansion to dimensions
+                let width = base_width * zoom;
+                let height = base_height * expansion * zoom;
+
+                let result = match format {
+                    ExportFormat::Svg => {
+                        crate::export::export_svg(
+                            &tree,
+                            &layout,
+                            &self.tree_painter,
+                            path,
+                            width,
+                            height,
+                        )
+                    }
+                    ExportFormat::Pdf => {
+                        crate::export::export_pdf(
+                            &tree,
+                            &layout,
+                            &self.tree_painter,
+                            path,
+                            width,
+                            height,
+                        )
+                    }
+                    _ => Err("Unsupported export format".to_string()),
+                };
+
+                match result {
+                    Ok(_) => {
+                        self.status = format!("Successfully exported to {}", path.display());
+                        self.last_error = None;
+                    }
+                    Err(e) => {
+                        self.last_error = Some(format!("Failed to export: {}", e));
+                    }
+                }
+            } else {
+                self.last_error = Some("Failed to create tree layout".to_string());
+            }
+        } else {
+            self.last_error = Some("No tree loaded".to_string());
+        }
+    }
+
     fn save_screenshot_to_file(
         &self,
         screenshot: &egui::ColorImage,
@@ -810,13 +922,13 @@ impl eframe::App for FigTreeGui {
                             ui.close();
                         }
 
-                        if ui.add_enabled(false, egui::Button::new("Export PDF")).clicked() {
-                            // TODO: Export as PDF
+                        if ui.button("Export PDF").clicked() {
+                            self.export_pdf_dialog();
                             ui.close();
                         }
 
-                        if ui.add_enabled(false, egui::Button::new("Export SVG")).clicked() {
-                            // TODO: Export as SVG
+                        if ui.button("Export SVG").clicked() {
+                            self.export_svg_dialog();
                             ui.close();
                         }
 
