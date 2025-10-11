@@ -191,10 +191,14 @@ pub fn export_svg(
                     }
                 }
 
+                // Check for branch color override
+                let branch_color = painter.branch_color_override(branch.child)
+                    .unwrap_or(painter.branch_stroke.color);
+
                 let branch_path = SvgPath::new()
                     .set("d", path_data)
                     .set("fill", "none")
-                    .set("stroke", color_to_hex(painter.branch_stroke.color))
+                    .set("stroke", color_to_hex(branch_color))
                     .set("stroke-width", painter.branch_stroke.width);
 
                 tree_group = tree_group.add(branch_path);
@@ -206,12 +210,16 @@ pub fn export_svg(
             let parent_pos = to_svg_coords(layout.positions[*parent]);
             let child_pos = to_svg_coords(layout.positions[*child]);
 
+            // Check for branch color override
+            let branch_color = painter.branch_color_override(*child)
+                .unwrap_or(painter.branch_stroke.color);
+
             let line = Line::new()
                 .set("x1", parent_pos.0)
                 .set("y1", parent_pos.1)
                 .set("x2", child_pos.0)
                 .set("y2", child_pos.1)
-                .set("stroke", color_to_hex(painter.branch_stroke.color))
+                .set("stroke", color_to_hex(branch_color))
                 .set("stroke-width", painter.branch_stroke.width);
 
             tree_group = tree_group.add(line);
