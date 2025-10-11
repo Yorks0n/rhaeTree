@@ -1029,6 +1029,21 @@ impl eframe::App for FigTreeGui {
                             }
                         }
 
+                        // Rotate button
+                        let has_node_selection = !self.tree_viewer.selected_nodes().is_empty();
+                        let rotate_response =
+                            ui.add_enabled(has_node_selection, egui::Button::new("↻ Rotate"));
+                        if rotate_response.clicked() {
+                            // Rotate the selected node's subtree
+                            if let Some(&node_id) = self.tree_viewer.selected_nodes().iter().next() {
+                                if let Some(tree) = self.tree_viewer.current_tree_mut() {
+                                    tree.rotate_node(node_id);
+                                    self.status = format!("Rotated node {}", node_id);
+                                    ctx.request_repaint();
+                                }
+                            }
+                        }
+
                         let has_selection = !self.tree_viewer.selected_tips().is_empty()
                             || !self.tree_viewer.selected_nodes().is_empty();
                         let color_response =

@@ -86,6 +86,27 @@ impl Tree {
         }
     }
 
+    /// Rotate a node's subtree by recursively reversing the order of all descendant nodes
+    /// This reverses the order of all tip nodes under the selected branch
+    pub fn rotate_node(&mut self, node_id: NodeId) {
+        // Recursively rotate all descendants first (post-order)
+        let children: Vec<NodeId> = if let Some(node) = self.nodes.get(node_id) {
+            node.children.clone()
+        } else {
+            return;
+        };
+
+        // Recursively rotate all children
+        for child_id in &children {
+            self.rotate_node(*child_id);
+        }
+
+        // Then reverse the children of this node
+        if let Some(node) = self.nodes.get_mut(node_id) {
+            node.children.reverse();
+        }
+    }
+
     /// Calculate the maximum distance from each node to any leaf in its subtree
     fn calculate_max_distances_to_leaves(&self) -> Vec<f64> {
         let mut distances = vec![0.0; self.nodes.len()];
