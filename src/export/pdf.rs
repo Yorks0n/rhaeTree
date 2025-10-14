@@ -358,9 +358,12 @@ fn generate_svg_without_text(
                             };
 
                             let label_offset = 8.0;
+                            // Calculate offset using the original angle (not flipped)
+                            // This ensures text is always positioned away from the tree center
                             let offset_x = label_offset * angle.cos();
                             let offset_y = label_offset * angle.sin();
 
+                            // Only flip the text rotation for readability, not the position offset
                             if normalized > 90.0 && normalized < 270.0 {
                                 (angle_deg + 180.0, x + offset_x, y + offset_y, "end")
                             } else {
@@ -703,7 +706,14 @@ pub fn export_pdf(
         };
 
         // Apply text transformation matrix
-        if text_elem.rotation.abs() > 0.1 {
+        // Check if rotation is significant and not near 180 degrees (which should be treated as horizontal)
+        let angle_tolerance_deg = 5.7; // About 0.1 radians in degrees
+        let rotation_deg = text_elem.rotation;
+        let is_near_zero = rotation_deg.abs() < angle_tolerance_deg;
+        let is_near_180 = (rotation_deg - 180.0).abs() < angle_tolerance_deg
+            || (rotation_deg + 180.0).abs() < angle_tolerance_deg;
+
+        if !is_near_zero && !is_near_180 {
             // TextMatrix::TranslateRotate expects degrees, not radians
             // PDF Y-axis is flipped, so negate the angle
             let rotation_deg = -text_elem.rotation;

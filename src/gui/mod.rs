@@ -672,44 +672,9 @@ impl FigTreeGui {
                         rect
                     }
                 };
-                let scale_x = if layout.width <= f32::EPSILON {
-                    inner.width().max(1.0)
-                } else {
-                    inner.width().max(1.0) / layout.width
-                };
-                let scale_y = if layout.height <= f32::EPSILON {
-                    inner.height().max(1.0)
-                } else {
-                    inner.height().max(1.0) / layout.height
-                };
-                let to_screen = |pos: (f32, f32)| -> egui::Pos2 {
-                    match self.current_layout {
-                        crate::tree::layout::TreeLayoutType::Circular
-                        | crate::tree::layout::TreeLayoutType::Radial
-                        | crate::tree::layout::TreeLayoutType::Daylight => {
-                            // 对于圆形、径向和Daylight布局，使用统一的缩放因子保持形状
-                            let available_radius = inner.width().min(inner.height()) * 0.45;
-                            let layout_radius = (layout.width.max(layout.height) * 0.5).max(1e-6);
-                            let scale = available_radius / layout_radius;
 
-                            // 计算画布中心
-                            let center_x = inner.left() + inner.width() * 0.5;
-                            let center_y = inner.top() + inner.height() * 0.5;
-
-                            // 将布局坐标转换为相对于画布中心的坐标
-                            let x = center_x + (pos.0 - layout.width * 0.5) * scale;
-                            let y = center_y + (pos.1 - layout.height * 0.5) * scale;
-
-                            egui::pos2(x, y)
-                        }
-                        _ => {
-                            // 其他布局使用标准坐标转换
-                            let x = inner.left() + pos.0 * scale_x;
-                            let y = inner.top() + pos.1 * scale_y;
-                            egui::pos2(x, y)
-                        }
-                    }
-                };
+                // Use the same coordinate transformation as rendering to ensure consistency
+                let to_screen = self.tree_painter.create_to_screen_transform(&tree, &layout, inner);
 
                 fn distance_to_segment(point: egui::Pos2, seg: (egui::Pos2, egui::Pos2)) -> f32 {
                     let ap = point - seg.0;

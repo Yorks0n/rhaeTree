@@ -132,6 +132,129 @@ impl Default for TreePainter {
 }
 
 impl TreePainter {
+    /// Create a coordinate transformation function from layout space to screen space.
+    /// This ensures consistent coordinate transformation between rendering and hit testing.
+    pub fn create_to_screen_transform(
+        &self,
+        tree: &Tree,
+        layout: &TreeLayout,
+        inner: egui::Rect,
+    ) -> impl Fn((f32, f32)) -> egui::Pos2 + '_ {
+        // Calculate tip extensions for align_tip_labels
+        let tip_extensions = if self.align_tip_labels {
+            self.calculate_tip_extensions(tree)
+        } else {
+            HashMap::new()
+        };
+
+        // Calculate scaling factors
+        let scale_x = if layout.width <= f32::EPSILON {
+            inner.width().max(1.0)
+        } else {
+            inner.width().max(1.0) / layout.width
+        };
+
+        let scale_y = if layout.height <= f32::EPSILON {
+            inner.height().max(1.0)
+        } else {
+            inner.height().max(1.0) / layout.height
+        };
+
+        // Pre-calculate parameters for circular/radial layouts
+        let (layout_center, layout_radius, available_radius, center_x, center_y) =
+            match layout.layout_type {
+                super::layout::TreeLayoutType::Circular
+                | super::layout::TreeLayoutType::Radial
+                | super::layout::TreeLayoutType::Daylight => {
+                    // 计算画布内切圆的最大可用半径，为标签留出固定空间
+                    let label_margin = if self.align_tip_labels && !tip_extensions.is_empty() {
+                        self.tip_label_font_size * 8.0 // 为延伸的标签留出屏幕空间
+                    } else {
+                        0.0
+                    };
+                    let available_radius = inner.width().min(inner.height()) * 0.45 - label_margin;
+
+                    // 获取根节点位置作为圆的中心（进化树形状的真实中心）
+                    let layout_center =
+                        if matches!(layout.layout_type, super::layout::TreeLayoutType::Circular) {
+                            if let Some(root_id) = tree.root {
+                                layout.positions[root_id]
+                            } else {
+                                (layout.width * 0.5, layout.height * 0.5)
+                            }
+                        } else {
+                            (layout.width * 0.5, layout.height * 0.5)
+                        };
+
+                    // 计算layout的实际半径（从根节点中心到所有节点的最大距离）
+                    let layout_radius = if self.align_tip_labels && !tip_extensions.is_empty() {
+                        // 找到所有tip到根节点的最大距离，加上extension
+                        let mut max_radius = 0.0f32;
+                        for node in &tree.nodes {
+                            if node.is_leaf() {
+                                let pos = layout.positions[node.id];
+                                let dx = pos.0 - layout_center.0;
+                                let dy = pos.1 - layout_center.1;
+                                let radius = (dx * dx + dy * dy).sqrt();
+                                max_radius = max_radius.max(radius);
+                            }
+                        }
+                        // 加上最大的extension（都在layout坐标系中）
+                        let max_extension =
+                            tip_extensions.values().fold(0.0f64, |a, &b| a.max(b)) as f32;
+                        (max_radius + max_extension).max(1e-6)
+                    } else {
+                        // 计算所有节点到根节点的最大欧几里得距离（精确值）
+                        let mut max_radius = 0.0f32;
+                        for node in &tree.nodes {
+                            let pos = layout.positions[node.id];
+                            let dx = pos.0 - layout_center.0;
+                            let dy = pos.1 - layout_center.1;
+                            let radius = (dx * dx + dy * dy).sqrt();
+                            max_radius = max_radius.max(radius);
+                        }
+                        max_radius.max(1e-6)
+                    };
+
+                    // 计算画布中心
+                    let center_x = inner.left() + inner.width() * 0.5;
+                    let center_y = inner.top() + inner.height() * 0.5;
+
+                    (layout_center, layout_radius, available_radius, center_x, center_y)
+                }
+                _ => {
+                    // For non-circular layouts, these values won't be used
+                    ((0.0, 0.0), 1.0, 1.0, 0.0, 0.0)
+                }
+            };
+
+        let layout_type = layout.layout_type;
+        let inner_left = inner.left();
+        let inner_top = inner.top();
+
+        move |pos: (f32, f32)| -> egui::Pos2 {
+            match layout_type {
+                super::layout::TreeLayoutType::Circular
+                | super::layout::TreeLayoutType::Radial
+                | super::layout::TreeLayoutType::Daylight => {
+                    let scale = available_radius / layout_radius;
+
+                    // 将布局坐标转换为相对于画布中心的坐标（使用根节点作为参考中心）
+                    let x = center_x + (pos.0 - layout_center.0) * scale;
+                    let y = center_y + (pos.1 - layout_center.1) * scale;
+
+                    egui::pos2(x, y)
+                }
+                _ => {
+                    // 其他布局使用标准坐标转换
+                    let x = inner_left + pos.0 * scale_x;
+                    let y = inner_top + pos.1 * scale_y;
+                    egui::pos2(x, y)
+                }
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub fn set_highlight_color(&mut self, color: Color32) {
         self.highlight_color = color;
@@ -506,102 +629,22 @@ impl TreePainter {
         let inner = if inner.is_positive() { inner } else { rect };
         painter.rect_filled(inner, 8.0, self.canvas_color);
 
-        // Calculate tip extensions for align_tip_labels
+        // Calculate tip extensions for align_tip_labels (needed for other parts of painting)
         let tip_extensions = if self.align_tip_labels {
             self.calculate_tip_extensions(tree)
         } else {
             HashMap::new()
         };
 
-        // Calculate scaling factors
+        // Calculate scale_x (needed for scale bar)
         let scale_x = if layout.width <= f32::EPSILON {
             inner.width().max(1.0)
         } else {
             inner.width().max(1.0) / layout.width
         };
 
-        let scale_y = if layout.height <= f32::EPSILON {
-            inner.height().max(1.0)
-        } else {
-            inner.height().max(1.0) / layout.height
-        };
-
-        let to_screen = |pos: (f32, f32)| -> egui::Pos2 {
-            match layout.layout_type {
-                super::layout::TreeLayoutType::Circular
-                | super::layout::TreeLayoutType::Radial
-                | super::layout::TreeLayoutType::Daylight => {
-                    // 对于圆形、径向和Daylight布局，使用统一的缩放因子保持形状
-                    // 计算画布内切圆的最大可用半径，为标签留出固定空间
-                    let label_margin = if self.align_tip_labels && !tip_extensions.is_empty() {
-                        self.tip_label_font_size * 8.0 // 为延伸的标签留出屏幕空间
-                    } else {
-                        0.0
-                    };
-                    let available_radius = inner.width().min(inner.height()) * 0.45 - label_margin;
-
-                    // 获取根节点位置作为圆的中心（进化树形状的真实中心）
-                    let layout_center =
-                        if matches!(layout.layout_type, super::layout::TreeLayoutType::Circular) {
-                            if let Some(root_id) = tree.root {
-                                layout.positions[root_id]
-                            } else {
-                                (layout.width * 0.5, layout.height * 0.5)
-                            }
-                        } else {
-                            (layout.width * 0.5, layout.height * 0.5)
-                        };
-
-                    // 计算layout的实际半径（从根节点中心到所有节点的最大距离）
-                    let layout_radius = if self.align_tip_labels && !tip_extensions.is_empty() {
-                        // 找到所有tip到根节点的最大距离，加上extension
-                        let mut max_radius = 0.0f32;
-                        for node in &tree.nodes {
-                            if node.is_leaf() {
-                                let pos = layout.positions[node.id];
-                                let dx = pos.0 - layout_center.0;
-                                let dy = pos.1 - layout_center.1;
-                                let radius = (dx * dx + dy * dy).sqrt();
-                                max_radius = max_radius.max(radius);
-                            }
-                        }
-                        // 加上最大的extension（都在layout坐标系中）
-                        let max_extension =
-                            tip_extensions.values().fold(0.0f64, |a, &b| a.max(b)) as f32;
-                        (max_radius + max_extension).max(1e-6)
-                    } else {
-                        // 计算所有节点到根节点的最大欧几里得距离（精确值）
-                        let mut max_radius = 0.0f32;
-                        for node in &tree.nodes {
-                            let pos = layout.positions[node.id];
-                            let dx = pos.0 - layout_center.0;
-                            let dy = pos.1 - layout_center.1;
-                            let radius = (dx * dx + dy * dy).sqrt();
-                            max_radius = max_radius.max(radius);
-                        }
-                        max_radius.max(1e-6)
-                    };
-
-                    let scale = available_radius / layout_radius;
-
-                    // 计算画布中心
-                    let center_x = inner.left() + inner.width() * 0.5;
-                    let center_y = inner.top() + inner.height() * 0.5;
-
-                    // 将布局坐标转换为相对于画布中心的坐标（使用根节点作为参考中心）
-                    let x = center_x + (pos.0 - layout_center.0) * scale;
-                    let y = center_y + (pos.1 - layout_center.1) * scale;
-
-                    egui::pos2(x, y)
-                }
-                _ => {
-                    // 其他布局使用标准坐标转换
-                    let x = inner.left() + pos.0 * scale_x;
-                    let y = inner.top() + pos.1 * scale_y;
-                    egui::pos2(x, y)
-                }
-            }
-        };
+        // Use the centralized coordinate transformation function
+        let to_screen = self.create_to_screen_transform(tree, layout, inner);
 
         // Paint highlight rectangles for Rectangular layout
         if matches!(
@@ -868,7 +911,7 @@ impl TreePainter {
                 } else {
                     // 回退到分段绘制（向后兼容）
                     for arc_segment in &layout.arc_segments {
-                        self.draw_arc(painter, arc_segment, to_screen, inner, selected_nodes);
+                        self.draw_arc(painter, arc_segment, &to_screen, inner, selected_nodes);
                     }
 
                     for segment in &layout.rect_segments {
@@ -1124,6 +1167,7 @@ impl TreePainter {
                         layout,
                         text_color,
                         tip_selected,
+                        &to_screen,
                     ) {
                         tip_label_hits.push(TipLabelHit {
                             node_id: node.id,
@@ -1291,14 +1335,16 @@ impl TreePainter {
         painter.add(egui::Shape::mesh(mesh));
     }
 
-    fn draw_arc(
+    fn draw_arc<F>(
         &self,
         painter: &egui::Painter,
         arc_segment: &crate::tree::layout::ArcSegment,
-        to_screen: impl Fn((f32, f32)) -> egui::Pos2,
+        to_screen: &F,
         _inner: egui::Rect,
         selected_nodes: &HashSet<NodeId>,
-    ) {
+    ) where
+        F: Fn((f32, f32)) -> egui::Pos2,
+    {
         // 转换中心点 - 现在center已经是正确的布局坐标中心
         let center_screen = to_screen(arc_segment.center);
 
@@ -1430,7 +1476,7 @@ impl TreePainter {
         self.node_radius = radius;
     }
 
-    fn paint_tip_label(
+    fn paint_tip_label<F>(
         &self,
         painter: &egui::Painter,
         tree: &Tree,
@@ -1440,7 +1486,11 @@ impl TreePainter {
         layout: &TreeLayout,
         text_color: Color32,
         is_selected: bool,
-    ) -> Option<(egui::Rect, f32, egui::Align2)> {
+        to_screen: &F,
+    ) -> Option<(egui::Rect, f32, egui::Align2)>
+    where
+        F: Fn((f32, f32)) -> egui::Pos2,
+    {
         let font_id = FontId::new(
             self.tip_label_font_size,
             self.tip_label_font_family.into_font_family(),
@@ -1459,6 +1509,7 @@ impl TreePainter {
                     text_color,
                     is_selected,
                     font_id,
+                    to_screen,
                 );
                 Some((rect, angle, anchor))
             }
@@ -1474,6 +1525,7 @@ impl TreePainter {
                     text_color,
                     is_selected,
                     font_id,
+                    to_screen,
                 );
                 Some((rect, angle, anchor))
             }
@@ -1529,7 +1581,7 @@ impl TreePainter {
         text_rect
     }
 
-    fn paint_circular_tip_label(
+    fn paint_circular_tip_label<F>(
         &self,
         painter: &egui::Painter,
         node: &TreeNode,
@@ -1539,10 +1591,14 @@ impl TreePainter {
         text_color: Color32,
         is_selected: bool,
         font_id: FontId,
-    ) -> (egui::Rect, f32, egui::Align2) {
+        to_screen: &F,
+    ) -> (egui::Rect, f32, egui::Align2)
+    where
+        F: Fn((f32, f32)) -> egui::Pos2,
+    {
         // Circular布局：使用从shoulder点（弧线和直线的拐角点）到Tip的方向
 
-        // 1. 计算分支方向角度（在布局坐标系中计算，避免窗口缩放影响）
+        // 1. 计算分支方向角度（在屏幕坐标系中计算，确保与hitbox一致）
         let straight_line_angle = if let Some(_parent_id) = node.parent {
             // 查找对应的continuous branch来获取shoulder点
             if let Some(branch) = layout
@@ -1556,36 +1612,39 @@ impl TreePainter {
                     let child_world_pos = branch.points[0]; // Tip节点位置
                     let shoulder_world_pos = branch.points[1]; // 拐角点位置
 
-                    // 在布局坐标系中计算角度（不受窗口缩放影响）
-                    let dx = child_world_pos.0 - shoulder_world_pos.0;
-                    let dy = child_world_pos.1 - shoulder_world_pos.1;
+                    // 转换到屏幕坐标系中计算角度
+                    let child_screen = to_screen(child_world_pos);
+                    let shoulder_screen = to_screen(shoulder_world_pos);
+
+                    let dx = child_screen.x - shoulder_screen.x;
+                    let dy = child_screen.y - shoulder_screen.y;
                     dy.atan2(dx)
                 } else {
-                    // fallback: 如果找不到shoulder点，使用布局坐标系中的父节点到子节点方向
-                    let parent_world_pos = layout.positions[_parent_id];
-                    let child_world_pos = layout.positions[node.id];
+                    // fallback: 如果找不到shoulder点，使用屏幕坐标系中的父节点到子节点方向
+                    let parent_screen = to_screen(layout.positions[_parent_id]);
+                    let child_screen = to_screen(layout.positions[node.id]);
 
-                    let dx = child_world_pos.0 - parent_world_pos.0;
-                    let dy = child_world_pos.1 - parent_world_pos.1;
+                    let dx = child_screen.x - parent_screen.x;
+                    let dy = child_screen.y - parent_screen.y;
                     dy.atan2(dx)
                 }
             } else {
-                // fallback: 如果找不到对应的branch，使用布局坐标系中的父节点到子节点方向
-                let parent_world_pos = layout.positions[_parent_id];
-                let child_world_pos = layout.positions[node.id];
+                // fallback: 如果找不到对应的branch，使用屏幕坐标系中的父节点到子节点方向
+                let parent_screen = to_screen(layout.positions[_parent_id]);
+                let child_screen = to_screen(layout.positions[node.id]);
 
-                let dx = child_world_pos.0 - parent_world_pos.0;
-                let dy = child_world_pos.1 - parent_world_pos.1;
+                let dx = child_screen.x - parent_screen.x;
+                let dy = child_screen.y - parent_screen.y;
                 dy.atan2(dx)
             }
         } else {
-            // 根节点：使用从布局中心到节点的方向
-            let layout_center_x = layout.width * 0.5;
-            let layout_center_y = layout.height * 0.5;
-            let node_world_pos = layout.positions[node.id];
+            // 根节点：使用从布局中心到节点的方向（在屏幕坐标系中）
+            let layout_center = (layout.width * 0.5, layout.height * 0.5);
+            let center_screen = to_screen(layout_center);
+            let node_screen = to_screen(layout.positions[node.id]);
 
-            let dx = node_world_pos.0 - layout_center_x;
-            let dy = node_world_pos.1 - layout_center_y;
+            let dx = node_screen.x - center_screen.x;
+            let dy = node_screen.y - center_screen.y;
             dy.atan2(dx)
         };
 
@@ -1696,7 +1755,7 @@ impl TreePainter {
         (text_rect, text_rotation_angle, text_anchor)
     }
 
-    fn paint_radial_tip_label(
+    fn paint_radial_tip_label<F>(
         &self,
         painter: &egui::Painter,
         _tree: &Tree,
@@ -1707,18 +1766,22 @@ impl TreePainter {
         text_color: Color32,
         is_selected: bool,
         font_id: FontId,
-    ) -> (egui::Rect, f32, egui::Align2) {
+        to_screen: &F,
+    ) -> (egui::Rect, f32, egui::Align2)
+    where
+        F: Fn((f32, f32)) -> egui::Pos2,
+    {
         // Radial布局：从Internal Node到Tip节点的方向
 
-        // 1. 计算分支方向角度（从父节点指向子节点）
+        // 1. 计算分支方向角度（在屏幕坐标系中计算，确保与hitbox一致）
         let branch_angle = if let Some(parent_id) = node.parent {
-            // 使用布局坐标系中的分支方向（统一计算）
-            let parent_world_pos = layout.positions[parent_id];
-            let node_world_pos = layout.positions[node.id];
+            // 转换到屏幕坐标系中计算分支方向
+            let parent_screen = to_screen(layout.positions[parent_id]);
+            // node_pos已经是屏幕坐标，直接使用
 
-            // 计算布局坐标系中从父节点到叶节点的方向
-            let direction_x = node_world_pos.0 - parent_world_pos.0;
-            let direction_y = node_world_pos.1 - parent_world_pos.1;
+            // 计算屏幕坐标系中从父节点到叶节点的方向
+            let direction_x = node_pos.x - parent_screen.x;
+            let direction_y = node_pos.y - parent_screen.y;
 
             // 计算角度（使用atan2确保正确的象限）
             direction_y.atan2(direction_x)
