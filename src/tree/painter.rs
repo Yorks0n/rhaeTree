@@ -1,6 +1,7 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use eframe::egui::{self, Color32, FontFamily, FontId, Stroke};
+use eframe::egui::{self, vec2, Color32, FontFamily, FontId, Stroke, Vec2};
 
 use super::{NodeId, Tree, TreeNode};
 use crate::tree::layout::TreeLayout;
@@ -347,6 +348,39 @@ impl TreePainter {
                         painter.rect_filled(highlight_rect, 0.0, highlight_color);
                     }
                 }
+            }
+        }
+
+        // Paint highlight bubbles for Radial layout
+        if matches!(layout.layout_type, super::layout::TreeLayoutType::Radial) {
+            for (&highlighted_node_id, &highlight_color) in &self.highlighted_clades {
+                let descendants = self.collect_all_descendants(tree, highlighted_node_id);
+                let leaf_descendants: Vec<NodeId> = descendants
+                    .into_iter()
+                    .filter(|&id| tree.nodes[id].is_leaf())
+                    .collect();
+
+                if leaf_descendants.is_empty() {
+                    continue;
+                }
+
+                let mut highlight_points: Vec<egui::Pos2> = leaf_descendants
+                    .iter()
+                    .map(|&tip_id| to_screen(layout.positions[tip_id]))
+                    .collect();
+
+                let node_screen = to_screen(layout.positions[highlighted_node_id]);
+                highlight_points.push(node_screen);
+
+                if let Some(parent_id) = tree.nodes[highlighted_node_id].parent {
+                    let parent_screen = to_screen(layout.positions[parent_id]);
+                    let direction = node_screen - parent_screen;
+                    let length = direction.length().max(1.0);
+                    let offset = direction / length * (length * 0.2 + 24.0);
+                    highlight_points.push(node_screen + offset);
+                }
+
+                self.draw_radial_highlight_polygon(painter, &highlight_points, highlight_color);
             }
         }
 
@@ -1687,6 +1721,322 @@ impl TreePainter {
     fn midpoint_angle(a: f32, b: f32) -> f32 {
         let diff = (b - a).rem_euclid(std::f32::consts::TAU);
         (a + diff * 0.5).rem_euclid(std::f32::consts::TAU)
+    }
+
+    fn draw_radial_highlight_polygon(
+        &self,
+        painter: &egui::Painter,
+        raw_points: &[egui::Pos2],
+        color: Color32,
+    ) {
+        let points = Self::dedup_points(raw_points);
+        if points.is_empty() {
+            return;
+        }
+
+        if points.len() == 1 {
+            painter.circle_filled(points[0], 16.0, color);
+            return;
+        }
+
+        let hull = Self::convex_hull(&points);
+        if hull.is_empty() {
+            return;
+        }
+
+        if hull.len() == 1 {
+            painter.circle_filled(hull[0], 16.0, color);
+            return;
+        }
+
+        if hull.len() == 2 {
+            Self::draw_capsule(painter, hull[0], hull[1], color);
+            return;
+        }
+
+        if hull.len() == 1 {
+            painter.circle_filled(hull[0], 12.0, color);
+            return;
+        }
+
+        if hull.len() == 2 {
+            Self::draw_capsule(painter, hull[0], hull[1], color);
+            return;
+        }
+
+        let beziers = Self::catmull_rom_to_beziers(&hull);
+        let polygon_points = Self::sample_bezier_loop(&beziers, 10);
+
+        if polygon_points.len() < 3 {
+            painter.circle_filled(hull[0], 12.0, color);
+            return;
+        }
+
+        let mut mesh = egui::Mesh::default();
+
+        let mut sum = vec2(0.0, 0.0);
+        for p in &polygon_points {
+            sum += vec2(p.x, p.y);
+        }
+        let centroid = egui::pos2(sum.x / polygon_points.len() as f32, sum.y / polygon_points.len() as f32);
+
+        let center_index = mesh.vertices.len() as u32;
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: centroid,
+            uv: egui::pos2(0.0, 0.0),
+            color,
+        });
+
+        let mut boundary_indices = Vec::with_capacity(polygon_points.len());
+        for point in &polygon_points {
+            let idx = mesh.vertices.len() as u32;
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: *point,
+                uv: egui::pos2(0.0, 0.0),
+                color,
+            });
+            boundary_indices.push(idx);
+        }
+
+        for i in 0..polygon_points.len() {
+            let next_i = (i + 1) % polygon_points.len();
+            mesh.indices.push(center_index);
+            mesh.indices.push(boundary_indices[i]);
+            mesh.indices.push(boundary_indices[next_i]);
+        }
+
+        painter.add(egui::Shape::mesh(mesh));
+    }
+
+    fn dedup_points(points: &[egui::Pos2]) -> Vec<egui::Pos2> {
+        let mut unique: Vec<egui::Pos2> = Vec::new();
+        const EPS: f32 = 0.5;
+        for &point in points {
+            if !unique.iter().any(|p| (p.x - point.x).abs() < EPS && (p.y - point.y).abs() < EPS) {
+                unique.push(point);
+            }
+        }
+        unique
+    }
+
+    fn convex_hull(points: &[egui::Pos2]) -> Vec<egui::Pos2> {
+        if points.len() <= 1 {
+            return points.to_vec();
+        }
+
+        let mut pts = points.to_vec();
+        pts.sort_by(|a, b| {
+            a.x
+                .partial_cmp(&b.x)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(Ordering::Equal))
+        });
+
+        pts.dedup_by(|a, b| (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3);
+
+        if pts.len() <= 2 {
+            return pts;
+        }
+
+        let mut lower: Vec<egui::Pos2> = Vec::new();
+        for &p in &pts {
+            while lower.len() >= 2
+                && Self::cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0
+            {
+                lower.pop();
+            }
+            lower.push(p);
+        }
+
+        let mut upper: Vec<egui::Pos2> = Vec::new();
+        for &p in pts.iter().rev() {
+            while upper.len() >= 2
+                && Self::cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0
+            {
+                upper.pop();
+            }
+            upper.push(p);
+        }
+
+        lower.pop();
+        upper.pop();
+        lower.extend(upper);
+        lower
+    }
+
+    fn cross(a: egui::Pos2, b: egui::Pos2, c: egui::Pos2) -> f32 {
+        let ab = egui::vec2(b.x - a.x, b.y - a.y);
+        let ac = egui::vec2(c.x - a.x, c.y - a.y);
+        ab.x * ac.y - ab.y * ac.x
+    }
+
+    fn catmull_rom_to_beziers(points: &[egui::Pos2]) -> Vec<[egui::Pos2; 4]> {
+        let n = points.len();
+        if n < 3 {
+            return Vec::new();
+        }
+
+        let mut segments = Vec::with_capacity(n);
+        for i in 0..n {
+            let p0 = points[(i + n - 1) % n];
+            let p1 = points[i % n];
+            let p2 = points[(i + 1) % n];
+            let p3 = points[(i + 2) % n];
+
+            let (t0, t1, t2, t3) = Self::centripetal_params(p0, p1, p2, p3);
+
+            let start = Self::catmull_rom_point(p0, p1, p2, p3, t0, t1, t2, t3, 0.0);
+            let end = Self::catmull_rom_point(p0, p1, p2, p3, t0, t1, t2, t3, 1.0);
+
+            let deriv_start = Self::catmull_derivative(p0, p1, p2, p3, t0, t1, t2, t3, 0.0);
+            let deriv_end = Self::catmull_derivative(p0, p1, p2, p3, t0, t1, t2, t3, 1.0);
+
+            let b0 = start;
+            let b3 = end;
+            let b1 = Self::pos_add_vec(b0, deriv_start / 3.0);
+            let b2 = Self::pos_add_vec(b3, -deriv_end / 3.0);
+
+            segments.push([b0, b1, b2, b3]);
+        }
+
+        segments
+    }
+
+    fn centripetal_params(
+        p0: egui::Pos2,
+        p1: egui::Pos2,
+        p2: egui::Pos2,
+        p3: egui::Pos2,
+    ) -> (f32, f32, f32, f32) {
+        let alpha = 0.5;
+        let t0 = 0.0;
+        let t1 = t0 + (p1 - p0).length().powf(alpha).max(1e-3);
+        let t2 = t1 + (p2 - p1).length().powf(alpha).max(1e-3);
+        let t3 = t2 + (p3 - p2).length().powf(alpha).max(1e-3);
+        (t0, t1, t2, t3)
+    }
+
+    fn catmull_rom_point(
+        p0: egui::Pos2,
+        p1: egui::Pos2,
+        p2: egui::Pos2,
+        p3: egui::Pos2,
+        t0: f32,
+        t1: f32,
+        t2: f32,
+        t3: f32,
+        s: f32,
+    ) -> egui::Pos2 {
+        let t = t1 + s * (t2 - t1);
+        let a1 = Self::lerp_pos(p0, p1, (t - t0) / (t1 - t0));
+        let a2 = Self::lerp_pos(p1, p2, (t - t1) / (t2 - t1));
+        let a3 = Self::lerp_pos(p2, p3, (t - t2) / (t3 - t2));
+
+        let b1 = Self::lerp_pos(a1, a2, (t - t0) / (t2 - t0));
+        let b2 = Self::lerp_pos(a2, a3, (t - t1) / (t3 - t1));
+
+        Self::lerp_pos(b1, b2, (t - t1) / (t2 - t1))
+    }
+
+    fn catmull_derivative(
+        p0: egui::Pos2,
+        p1: egui::Pos2,
+        p2: egui::Pos2,
+        p3: egui::Pos2,
+        t0: f32,
+        t1: f32,
+        t2: f32,
+        t3: f32,
+        s: f32,
+    ) -> Vec2 {
+        let delta = 1e-3;
+        let s1 = (s - delta).max(0.0);
+        let s2 = (s + delta).min(1.0);
+        let p_a = Self::catmull_rom_point(p0, p1, p2, p3, t0, t1, t2, t3, s1).to_vec2();
+        let p_b = Self::catmull_rom_point(p0, p1, p2, p3, t0, t1, t2, t3, s2).to_vec2();
+        (p_b - p_a) / (s2 - s1)
+    }
+
+    fn pos_add_vec(pos: egui::Pos2, vec: Vec2) -> egui::Pos2 {
+        egui::pos2(pos.x + vec.x, pos.y + vec.y)
+    }
+
+    fn sample_bezier_loop(segments: &[[egui::Pos2; 4]], steps_per: usize) -> Vec<egui::Pos2> {
+        let steps_per = steps_per.max(1);
+        let mut samples = Vec::new();
+
+        for (idx, seg) in segments.iter().enumerate() {
+            for step in 0..=steps_per {
+                if idx > 0 && step == 0 {
+                    continue;
+                }
+                if idx < segments.len() - 1 && step == steps_per {
+                    continue;
+                }
+                let t = step as f32 / steps_per as f32;
+                samples.push(Self::cubic_bezier_point(seg, t));
+            }
+        }
+
+        samples
+    }
+
+    fn cubic_bezier_point(seg: &[egui::Pos2; 4], t: f32) -> egui::Pos2 {
+        let inv = 1.0 - t;
+        let p0 = seg[0];
+        let p1 = seg[1];
+        let p2 = seg[2];
+        let p3 = seg[3];
+        let x = inv.powi(3) * p0.x
+            + 3.0 * inv.powi(2) * t * p1.x
+            + 3.0 * inv * t.powi(2) * p2.x
+            + t.powi(3) * p3.x;
+        let y = inv.powi(3) * p0.y
+            + 3.0 * inv.powi(2) * t * p1.y
+            + 3.0 * inv * t.powi(2) * p2.y
+            + t.powi(3) * p3.y;
+        egui::pos2(x, y)
+    }
+
+    fn lerp_pos(a: egui::Pos2, b: egui::Pos2, t: f32) -> egui::Pos2 {
+        egui::pos2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
+    }
+
+    fn draw_capsule(
+        painter: &egui::Painter,
+        a: egui::Pos2,
+        b: egui::Pos2,
+        color: Color32,
+    ) {
+        let delta = b - a;
+        let length = delta.length();
+        let radius = 14.0;
+
+        if length <= 1e-3 {
+            painter.circle_filled(a, radius, color);
+            return;
+        }
+
+        let dir = delta / length;
+        let perp = egui::vec2(-dir.y, dir.x) * radius;
+
+        let mut mesh = egui::Mesh::default();
+
+        // Add rectangle body
+        let rect_points = [a + perp, b + perp, b - perp, a - perp];
+        for point in rect_points.iter() {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: *point,
+                uv: egui::pos2(0.0, 0.0),
+                color,
+            });
+        }
+        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+
+        painter.add(egui::Shape::mesh(mesh));
+
+        painter.circle_filled(a, radius, color);
+        painter.circle_filled(b, radius, color);
     }
 
     /// Draw the highlight sector using the existing draw_filled_sector function
