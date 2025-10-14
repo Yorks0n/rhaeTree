@@ -111,11 +111,7 @@ impl Tree {
     fn calculate_max_distances_to_leaves(&self) -> Vec<f64> {
         let mut distances = vec![0.0; self.nodes.len()];
 
-        fn calculate_distance(
-            node_id: NodeId,
-            nodes: &[TreeNode],
-            distances: &mut [f64],
-        ) -> f64 {
+        fn calculate_distance(node_id: NodeId, nodes: &[TreeNode], distances: &mut [f64]) -> f64 {
             let node = &nodes[node_id];
 
             if node.is_leaf() {

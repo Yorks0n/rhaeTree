@@ -76,6 +76,5 @@ fn assign_positions(
     positions[node_id] = (x_pos, y_pos);
     *max_x = (*max_x).max(x_pos);
 
-
     y_pos
 }

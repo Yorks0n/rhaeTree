@@ -4,15 +4,36 @@ use std::collections::{HashMap, HashSet};
 use eframe::egui::{self, vec2, Color32, FontFamily, FontId, Stroke, Vec2};
 
 use super::{NodeId, Tree, TreeNode};
-use crate::tree::layout::TreeLayout;
 use crate::rotated_text::RotatedText;
+use crate::tree::layout::TreeLayout;
+
+#[derive(Clone, Debug)]
+pub enum HighlightShape {
+    Rect {
+        top_left: egui::Pos2,
+        bottom_right: egui::Pos2,
+        color: Color32,
+    },
+    Sector {
+        center: egui::Pos2,
+        inner_radius: f32,
+        outer_radius: f32,
+        start_angle: f32,
+        end_angle: f32,
+        color: Color32,
+    },
+    Polygon {
+        points: Vec<egui::Pos2>,
+        color: Color32,
+    },
+}
 
 #[derive(Clone)]
 pub struct TipLabelHit {
     pub node_id: NodeId,
     pub rect: egui::Rect,
     pub rotation_angle: f32,  // 添加旋转角度信息
-    pub anchor: egui::Align2,  // 添加锚点信息
+    pub anchor: egui::Align2, // 添加锚点信息
 }
 
 impl TipLabelHit {
@@ -157,6 +178,316 @@ impl TreePainter {
         &self.highlighted_clades
     }
 
+    pub fn compute_highlight_shapes(
+        &self,
+        tree: &Tree,
+        layout: &TreeLayout,
+    ) -> Vec<HighlightShape> {
+        use crate::tree::layout::TreeLayoutType;
+
+        if self.highlighted_clades.is_empty() {
+            return Vec::new();
+        }
+
+        match layout.layout_type {
+            TreeLayoutType::Rectangular | TreeLayoutType::Phylogram | TreeLayoutType::Cladogram => {
+                self.compute_rectangular_highlights(tree, layout)
+            }
+            TreeLayoutType::Circular => self.compute_circular_highlights(tree, layout),
+            TreeLayoutType::Radial => self.compute_radial_highlights(tree, layout),
+            TreeLayoutType::Daylight => self.compute_circular_highlights(tree, layout),
+            TreeLayoutType::Slanted => self.compute_rectangular_highlights(tree, layout),
+        }
+    }
+
+    fn compute_rectangular_highlights(
+        &self,
+        tree: &Tree,
+        layout: &TreeLayout,
+    ) -> Vec<HighlightShape> {
+        let mut highlights = Vec::new();
+
+        // Collect all tip nodes and their vertical positions (sorted)
+        let mut tip_positions: Vec<(NodeId, f32)> = tree
+            .nodes
+            .iter()
+            .filter(|node| node.is_leaf())
+            .map(|node| (node.id, layout.positions[node.id].1))
+            .collect();
+
+        if tip_positions.is_empty() {
+            return highlights;
+        }
+
+        tip_positions.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+
+        let tip_index_map: HashMap<NodeId, usize> = tip_positions
+            .iter()
+            .enumerate()
+            .map(|(idx, (id, _))| (*id, idx))
+            .collect();
+
+        let tip_ys: Vec<f32> = tip_positions.iter().map(|(_, y)| *y).collect();
+
+        // Estimate a reasonable fallback gap when no neighbour exists
+        let default_gap =
+            Self::average_gap(&tip_ys).unwrap_or_else(|| (self.node_radius.max(1.0)) * 4.0);
+
+        for (&highlighted_node_id, &highlight_color) in &self.highlighted_clades {
+            let leaf_descendants = self.collect_leaf_descendants(tree, highlighted_node_id);
+            if leaf_descendants.is_empty() {
+                continue;
+            }
+
+            let mut indices: Vec<usize> = leaf_descendants
+                .iter()
+                .filter_map(|leaf_id| tip_index_map.get(leaf_id).copied())
+                .collect();
+
+            if indices.is_empty() {
+                continue;
+            }
+
+            indices.sort_unstable();
+            let min_idx = indices[0];
+            let max_idx = *indices.last().unwrap();
+
+            let min_y = tip_ys[min_idx];
+            let max_y = tip_ys[max_idx];
+
+            let gap_above = if min_idx > 0 {
+                (min_y - tip_ys[min_idx - 1]).abs() * 0.5
+            } else {
+                default_gap * 0.5
+            };
+
+            let gap_below = if max_idx + 1 < tip_ys.len() {
+                (tip_ys[max_idx + 1] - max_y).abs() * 0.5
+            } else {
+                default_gap * 0.5
+            };
+
+            let top_y = min_y - gap_above;
+            let bottom_y = max_y + gap_below;
+
+            let node_world = layout.positions[highlighted_node_id];
+            let branch_mid_x = if let Some(parent_id) = tree.nodes[highlighted_node_id].parent {
+                let parent_world = layout.positions[parent_id];
+                (parent_world.0 + node_world.0) * 0.5
+            } else {
+                node_world.0
+            };
+
+            let furthest_tip_x = leaf_descendants
+                .iter()
+                .map(|&tip_id| layout.positions[tip_id].0)
+                .fold(branch_mid_x, f32::max);
+
+            let left = branch_mid_x.min(furthest_tip_x);
+            let right = branch_mid_x.max(furthest_tip_x);
+
+            highlights.push(HighlightShape::Rect {
+                top_left: egui::pos2(left, top_y.min(bottom_y)),
+                bottom_right: egui::pos2(right, top_y.max(bottom_y)),
+                color: highlight_color,
+            });
+        }
+
+        highlights
+    }
+
+    fn compute_circular_highlights(&self, tree: &Tree, layout: &TreeLayout) -> Vec<HighlightShape> {
+        let mut highlights = Vec::new();
+
+        let center_world = if let Some(root_id) = tree.root {
+            layout.positions[root_id]
+        } else {
+            (layout.width * 0.5, layout.height * 0.5)
+        };
+
+        let tip_extensions = if self.align_tip_labels {
+            self.calculate_tip_extensions(tree)
+        } else {
+            HashMap::new()
+        };
+
+        for (&highlighted_node_id, &highlight_color) in &self.highlighted_clades {
+            let leaf_descendants = self.collect_leaf_descendants(tree, highlighted_node_id);
+            if leaf_descendants.is_empty() {
+                continue;
+            }
+
+            let inner_radius = self.calculate_highlight_inner_radius(
+                tree,
+                layout,
+                highlighted_node_id,
+                center_world,
+            );
+
+            let mut outer_radius = 0.0f32;
+            for &tip_id in &leaf_descendants {
+                let pos = layout.positions[tip_id];
+                let dx = pos.0 - center_world.0;
+                let dy = pos.1 - center_world.1;
+                let mut radius = (dx * dx + dy * dy).sqrt();
+                if let Some(extension) = tip_extensions.get(&tip_id) {
+                    radius += *extension as f32;
+                }
+                outer_radius = outer_radius.max(radius);
+            }
+
+            if outer_radius <= inner_radius {
+                outer_radius = inner_radius + 1.0;
+            }
+
+            if let Some((start_angle, end_angle)) =
+                self.calculate_sector_angles(tree, layout, center_world, &leaf_descendants)
+            {
+                highlights.push(HighlightShape::Sector {
+                    center: egui::pos2(center_world.0, center_world.1),
+                    inner_radius,
+                    outer_radius,
+                    start_angle,
+                    end_angle,
+                    color: highlight_color,
+                });
+            }
+        }
+
+        highlights
+    }
+
+    fn compute_radial_highlights(&self, tree: &Tree, layout: &TreeLayout) -> Vec<HighlightShape> {
+        let mut highlights = Vec::new();
+        let padding = (layout.width.max(layout.height) * 0.02).max(2.0);
+
+        for (&highlighted_node_id, &highlight_color) in &self.highlighted_clades {
+            let leaf_descendants = self.collect_leaf_descendants(tree, highlighted_node_id);
+            if leaf_descendants.is_empty() {
+                continue;
+            }
+
+            let mut points: Vec<egui::Pos2> = leaf_descendants
+                .iter()
+                .map(|&tip_id| {
+                    let pos = layout.positions[tip_id];
+                    egui::pos2(pos.0, pos.1)
+                })
+                .collect();
+
+            let node_pos = layout.positions[highlighted_node_id];
+            points.push(egui::pos2(node_pos.0, node_pos.1));
+
+            if let Some(parent_id) = tree.nodes[highlighted_node_id].parent {
+                let parent_pos = layout.positions[parent_id];
+                let direction = egui::vec2(node_pos.0 - parent_pos.0, node_pos.1 - parent_pos.1);
+                let length = direction.length();
+                if length > 1e-3 {
+                    let normalized = direction / length;
+                    let offset_distance = length * 0.2 + padding;
+                    points.push(egui::pos2(
+                        node_pos.0 + normalized.x * offset_distance,
+                        node_pos.1 + normalized.y * offset_distance,
+                    ));
+                }
+            }
+
+            let polygon = Self::polygon_from_points(&points, padding);
+            if polygon.len() >= 3 {
+                highlights.push(HighlightShape::Polygon {
+                    points: polygon,
+                    color: highlight_color,
+                });
+            }
+        }
+
+        highlights
+    }
+
+    fn collect_leaf_descendants(&self, tree: &Tree, node_id: NodeId) -> Vec<NodeId> {
+        self.collect_all_descendants(tree, node_id)
+            .into_iter()
+            .filter(|descendant| tree.nodes[*descendant].is_leaf())
+            .collect()
+    }
+
+    fn average_gap(values: &[f32]) -> Option<f32> {
+        if values.len() < 2 {
+            return None;
+        }
+
+        let mut total = 0.0f32;
+        let mut count = 0usize;
+
+        for pair in values.windows(2) {
+            let gap = (pair[1] - pair[0]).abs();
+            if gap > f32::EPSILON {
+                total += gap;
+                count += 1;
+            }
+        }
+
+        if count > 0 {
+            Some(total / count as f32)
+        } else {
+            None
+        }
+    }
+
+    fn polygon_from_points(points: &[egui::Pos2], padding: f32) -> Vec<egui::Pos2> {
+        let unique_points = Self::dedup_points(points);
+
+        match unique_points.as_slice() {
+            [] => Vec::new(),
+            [single] => Self::approximate_circle(*single, padding.max(2.0), 16),
+            [a, b] => Self::approximate_capsule(*a, *b, padding.max(2.0)),
+            _ => {
+                let hull = Self::convex_hull(&unique_points);
+                if hull.len() < 3 {
+                    if hull.len() == 2 {
+                        Self::approximate_capsule(hull[0], hull[1], padding.max(2.0))
+                    } else {
+                        Self::approximate_circle(hull[0], padding.max(2.0), 16)
+                    }
+                } else {
+                    hull
+                }
+            }
+        }
+    }
+
+    fn approximate_circle(center: egui::Pos2, radius: f32, segments: usize) -> Vec<egui::Pos2> {
+        let steps = segments.max(8);
+        (0..steps)
+            .map(|i| {
+                let angle = (i as f32 / steps as f32) * std::f32::consts::TAU;
+                egui::pos2(
+                    center.x + radius * angle.cos(),
+                    center.y + radius * angle.sin(),
+                )
+            })
+            .collect()
+    }
+
+    fn approximate_capsule(a: egui::Pos2, b: egui::Pos2, radius: f32) -> Vec<egui::Pos2> {
+        let dir = egui::vec2(b.x - a.x, b.y - a.y);
+        let length = dir.length();
+
+        if length <= 1e-3 {
+            return Self::approximate_circle(a, radius, 16);
+        }
+
+        let unit = dir / length;
+        let perp = egui::vec2(-unit.y, unit.x) * radius;
+
+        vec![
+            egui::pos2(a.x + perp.x, a.y + perp.y),
+            egui::pos2(b.x + perp.x, b.y + perp.y),
+            egui::pos2(b.x - perp.x, b.y - perp.y),
+            egui::pos2(a.x - perp.x, a.y - perp.y),
+        ]
+    }
+
     pub fn paint_tree(
         &self,
         painter: &egui::Painter,
@@ -197,7 +528,9 @@ impl TreePainter {
 
         let to_screen = |pos: (f32, f32)| -> egui::Pos2 {
             match layout.layout_type {
-                super::layout::TreeLayoutType::Circular | super::layout::TreeLayoutType::Radial | super::layout::TreeLayoutType::Daylight => {
+                super::layout::TreeLayoutType::Circular
+                | super::layout::TreeLayoutType::Radial
+                | super::layout::TreeLayoutType::Daylight => {
                     // 对于圆形、径向和Daylight布局，使用统一的缩放因子保持形状
                     // 计算画布内切圆的最大可用半径，为标签留出固定空间
                     let label_margin = if self.align_tip_labels && !tip_extensions.is_empty() {
@@ -208,15 +541,16 @@ impl TreePainter {
                     let available_radius = inner.width().min(inner.height()) * 0.45 - label_margin;
 
                     // 获取根节点位置作为圆的中心（进化树形状的真实中心）
-                    let layout_center = if matches!(layout.layout_type, super::layout::TreeLayoutType::Circular) {
-                        if let Some(root_id) = tree.root {
-                            layout.positions[root_id]
+                    let layout_center =
+                        if matches!(layout.layout_type, super::layout::TreeLayoutType::Circular) {
+                            if let Some(root_id) = tree.root {
+                                layout.positions[root_id]
+                            } else {
+                                (layout.width * 0.5, layout.height * 0.5)
+                            }
                         } else {
                             (layout.width * 0.5, layout.height * 0.5)
-                        }
-                    } else {
-                        (layout.width * 0.5, layout.height * 0.5)
-                    };
+                        };
 
                     // 计算layout的实际半径（从根节点中心到所有节点的最大距离）
                     let layout_radius = if self.align_tip_labels && !tip_extensions.is_empty() {
@@ -232,7 +566,8 @@ impl TreePainter {
                             }
                         }
                         // 加上最大的extension（都在layout坐标系中）
-                        let max_extension = tip_extensions.values().fold(0.0f64, |a, &b| a.max(b)) as f32;
+                        let max_extension =
+                            tip_extensions.values().fold(0.0f64, |a, &b| a.max(b)) as f32;
                         (max_radius + max_extension).max(1e-6)
                     } else {
                         // 计算所有节点到根节点的最大欧几里得距离（精确值）
@@ -269,7 +604,10 @@ impl TreePainter {
         };
 
         // Paint highlight rectangles for Rectangular layout
-        if matches!(layout.layout_type, super::layout::TreeLayoutType::Rectangular) {
+        if matches!(
+            layout.layout_type,
+            super::layout::TreeLayoutType::Rectangular
+        ) {
             // Get all tip y-positions in the entire tree (sorted) - computed once for all highlights
             let mut all_tip_ys: Vec<f32> = tree
                 .nodes
@@ -319,11 +657,16 @@ impl TreePainter {
                         .iter()
                         .map(|&tip_id| layout.positions[tip_id].1)
                         .collect();
-                    clade_tip_ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    clade_tip_ys
+                        .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-                    if let (Some(&min_clade_y), Some(&max_clade_y)) = (clade_tip_ys.first(), clade_tip_ys.last()) {
+                    if let (Some(&min_clade_y), Some(&max_clade_y)) =
+                        (clade_tip_ys.first(), clade_tip_ys.last())
+                    {
                         // Calculate top edge: halfway to the clade above
-                        let top_y = if let Some(&above_y) = all_tip_ys.iter().rev().find(|&&y| y < min_clade_y) {
+                        let top_y = if let Some(&above_y) =
+                            all_tip_ys.iter().rev().find(|&&y| y < min_clade_y)
+                        {
                             (min_clade_y + above_y) * 0.5
                         } else {
                             // No clade above, extend to the top margin
@@ -331,20 +674,22 @@ impl TreePainter {
                         };
 
                         // Calculate bottom edge: halfway to the clade below
-                        let bottom_y = if let Some(&below_y) = all_tip_ys.iter().find(|&&y| y > max_clade_y) {
-                            (max_clade_y + below_y) * 0.5
-                        } else {
-                            // No clade below, extend to the bottom margin
-                            let n = all_tip_ys.len();
-                            max_clade_y + (all_tip_ys[n - 1] - all_tip_ys[n - 2]) * 0.5
-                        };
+                        let bottom_y =
+                            if let Some(&below_y) = all_tip_ys.iter().find(|&&y| y > max_clade_y) {
+                                (max_clade_y + below_y) * 0.5
+                            } else {
+                                // No clade below, extend to the bottom margin
+                                let n = all_tip_ys.len();
+                                max_clade_y + (all_tip_ys[n - 1] - all_tip_ys[n - 2]) * 0.5
+                            };
 
                         // Convert world coordinates to screen coordinates
                         let top_left_screen = to_screen((branch_midpoint_x, top_y));
                         let bottom_right_screen = to_screen((furthest_tip_x, bottom_y));
 
                         // Draw the filled rectangle
-                        let highlight_rect = egui::Rect::from_two_pos(top_left_screen, bottom_right_screen);
+                        let highlight_rect =
+                            egui::Rect::from_two_pos(top_left_screen, bottom_right_screen);
                         painter.rect_filled(highlight_rect, 0.0, highlight_color);
                     }
                 }
@@ -415,12 +760,14 @@ impl TreePainter {
                         max_radius = max_radius.max(radius);
                     }
                     if self.align_tip_labels && !tip_extensions.is_empty() {
-                        let max_extension = tip_extensions.values().fold(0.0f64, |a, &b| a.max(b)) as f32;
+                        let max_extension =
+                            tip_extensions.values().fold(0.0f64, |a, &b| a.max(b)) as f32;
                         max_radius + max_extension
                     } else {
                         max_radius
                     }
-                }.max(1e-6);
+                }
+                .max(1e-6);
 
                 available_radius / layout_max_radius
             };
@@ -461,12 +808,9 @@ impl TreePainter {
                     continue;
                 }
 
-                if let Some((start_angle, end_angle)) = self.calculate_sector_angles(
-                    tree,
-                    layout,
-                    center_world,
-                    &leaf_descendants,
-                ) {
+                if let Some((start_angle, end_angle)) =
+                    self.calculate_sector_angles(tree, layout, center_world, &leaf_descendants)
+                {
                     let inner_radius_screen = inner_radius_world * scale;
                     let outer_radius_screen = outer_radius_world * scale;
 
@@ -510,38 +854,33 @@ impl TreePainter {
                 if !layout.continuous_branches.is_empty() {
                     // 优先使用连续分支绘制
                     for branch in &layout.continuous_branches {
-                        let screen_points: Vec<egui::Pos2> = branch.points
+                        let screen_points: Vec<egui::Pos2> = branch
+                            .points
                             .iter()
                             .map(|&point| to_screen(point))
                             .collect();
 
-                        let override_color = self.branch_color_overrides.get(&branch.child).copied();
+                        let override_color =
+                            self.branch_color_overrides.get(&branch.child).copied();
                         let is_selected = selected_nodes.contains(&branch.child);
-                        self.draw_branch(
-                            painter,
-                            screen_points,
-                            override_color,
-                            is_selected,
-                        );
+                        self.draw_branch(painter, screen_points, override_color, is_selected);
                     }
                 } else {
                     // 回退到分段绘制（向后兼容）
                     for arc_segment in &layout.arc_segments {
-                        self.draw_arc(
-                            painter,
-                            arc_segment,
-                            to_screen,
-                            inner,
-                            selected_nodes,
-                        );
+                        self.draw_arc(painter, arc_segment, to_screen, inner, selected_nodes);
                     }
 
                     for segment in &layout.rect_segments {
                         let start_screen = to_screen(segment.start);
                         let end_screen = to_screen(segment.end);
 
-                        let override_color = segment.child.and_then(|child| self.branch_color_overrides.get(&child).copied());
-                        let is_selected = segment.child.map_or(false, |child| selected_nodes.contains(&child));
+                        let override_color = segment
+                            .child
+                            .and_then(|child| self.branch_color_overrides.get(&child).copied());
+                        let is_selected = segment
+                            .child
+                            .map_or(false, |child| selected_nodes.contains(&child));
                         self.draw_branch(
                             painter,
                             vec![start_screen, end_screen],
@@ -551,8 +890,7 @@ impl TreePainter {
                     }
                 }
             }
-            super::layout::TreeLayoutType::Radial
-            | super::layout::TreeLayoutType::Daylight => {
+            super::layout::TreeLayoutType::Radial | super::layout::TreeLayoutType::Daylight => {
                 for (parent, child) in &layout.edges {
                     let parent_world = layout.positions[*parent];
                     let child_world = layout.positions[*child];
@@ -590,10 +928,8 @@ impl TreePainter {
 
         // Paint tip extensions (dashed lines) if align_tip_labels is enabled
         if self.align_tip_labels && !tip_extensions.is_empty() {
-            let dashed_stroke = Stroke::new(
-                self.branch_stroke.width * 0.8,
-                Color32::from_gray(150)
-            );
+            let dashed_stroke =
+                Stroke::new(self.branch_stroke.width * 0.8, Color32::from_gray(150));
 
             for (tip_id, &extension) in &tip_extensions {
                 if extension < 1e-6 {
@@ -605,10 +941,10 @@ impl TreePainter {
 
                 // Calculate extended position based on layout type
                 let extended_pos = match layout.layout_type {
-                    super::layout::TreeLayoutType::Rectangular |
-                    super::layout::TreeLayoutType::Slanted |
-                    super::layout::TreeLayoutType::Cladogram |
-                    super::layout::TreeLayoutType::Phylogram => {
+                    super::layout::TreeLayoutType::Rectangular
+                    | super::layout::TreeLayoutType::Slanted
+                    | super::layout::TreeLayoutType::Cladogram
+                    | super::layout::TreeLayoutType::Phylogram => {
                         // For rectangular-like layouts, extend horizontally
                         let extended_world = (tip_world.0 + extension as f32, tip_world.1);
                         to_screen(extended_world)
@@ -616,7 +952,11 @@ impl TreePainter {
                     super::layout::TreeLayoutType::Circular => {
                         // For circular layout, extend along the straight branch direction (shoulder to tip)
                         // Find the continuous branch for this tip
-                        let direction = if let Some(branch) = layout.continuous_branches.iter().find(|b| b.child == *tip_id) {
+                        let direction = if let Some(branch) = layout
+                            .continuous_branches
+                            .iter()
+                            .find(|b| b.child == *tip_id)
+                        {
                             if branch.points.len() >= 2 {
                                 // branch.points structure: [child, shoulder, ...arc points..., parent]
                                 let child_pos = branch.points[0];
@@ -650,8 +990,8 @@ impl TreePainter {
                         );
                         to_screen(extended_world)
                     }
-                    super::layout::TreeLayoutType::Radial |
-                    super::layout::TreeLayoutType::Daylight => {
+                    super::layout::TreeLayoutType::Radial
+                    | super::layout::TreeLayoutType::Daylight => {
                         // For radial layouts, extend radially from center
                         let center_x = layout.width * 0.5;
                         let center_y = layout.height * 0.5;
@@ -710,15 +1050,19 @@ impl TreePainter {
                         if let Some(&extension) = tip_extensions.get(&node.id) {
                             let tip_world = layout.positions[node.id];
                             let extended_world = match layout.layout_type {
-                                super::layout::TreeLayoutType::Rectangular |
-                                super::layout::TreeLayoutType::Slanted |
-                                super::layout::TreeLayoutType::Cladogram |
-                                super::layout::TreeLayoutType::Phylogram => {
+                                super::layout::TreeLayoutType::Rectangular
+                                | super::layout::TreeLayoutType::Slanted
+                                | super::layout::TreeLayoutType::Cladogram
+                                | super::layout::TreeLayoutType::Phylogram => {
                                     (tip_world.0 + extension as f32, tip_world.1)
                                 }
                                 super::layout::TreeLayoutType::Circular => {
                                     // For circular layout, extend along the straight branch direction (shoulder to tip)
-                                    let direction = if let Some(branch) = layout.continuous_branches.iter().find(|b| b.child == node.id) {
+                                    let direction = if let Some(branch) = layout
+                                        .continuous_branches
+                                        .iter()
+                                        .find(|b| b.child == node.id)
+                                    {
                                         if branch.points.len() >= 2 {
                                             let child_pos = branch.points[0];
                                             let shoulder_pos = branch.points[1];
@@ -750,8 +1094,8 @@ impl TreePainter {
                                         tip_world.1 + direction.1 * extension as f32,
                                     )
                                 }
-                                super::layout::TreeLayoutType::Radial |
-                                super::layout::TreeLayoutType::Daylight => {
+                                super::layout::TreeLayoutType::Radial
+                                | super::layout::TreeLayoutType::Daylight => {
                                     let center_x = layout.width * 0.5;
                                     let center_y = layout.height * 0.5;
                                     let dx = tip_world.0 - center_x;
@@ -879,7 +1223,7 @@ impl TreePainter {
         // Aim for ~2 pixels per segment at the average radius for smooth rendering
         let segment_count = ((angular_span * avg_radius / 2.0)
             .max(angular_span * 30.0 / std::f32::consts::PI))
-            .max(12.0) as usize;
+        .max(12.0) as usize;
         let angle_step = (end_angle - start_angle) / segment_count as f32;
 
         // Sample points along the outer and inner arcs（保留相同的角度顺序，便于后续构建四边形带）
@@ -996,7 +1340,10 @@ impl TreePainter {
 
         // 绘制圆弧
         if is_selected {
-            let highlight_width = self.branch_highlight_stroke.width.max(self.branch_stroke.width * 3.0);
+            let highlight_width = self
+                .branch_highlight_stroke
+                .width
+                .max(self.branch_stroke.width * 3.0);
             let highlight_stroke = Stroke::new(highlight_width, self.tip_selection_color);
             painter.add(egui::Shape::line(arc_points.clone(), highlight_stroke));
         }
@@ -1104,21 +1451,41 @@ impl TreePainter {
             super::layout::TreeLayoutType::Circular => {
                 // Circular布局使用从中心到Tip的方向
                 let (rect, angle, anchor) = self.paint_circular_tip_label(
-                    painter, node, label, node_pos, layout, text_color, is_selected, font_id,
+                    painter,
+                    node,
+                    label,
+                    node_pos,
+                    layout,
+                    text_color,
+                    is_selected,
+                    font_id,
                 );
                 Some((rect, angle, anchor))
             }
             super::layout::TreeLayoutType::Radial | super::layout::TreeLayoutType::Daylight => {
                 // Radial和Daylight布局使用从Internal Node到Tip的方向
                 let (rect, angle, anchor) = self.paint_radial_tip_label(
-                    painter, tree, node, label, node_pos, layout, text_color, is_selected, font_id,
+                    painter,
+                    tree,
+                    node,
+                    label,
+                    node_pos,
+                    layout,
+                    text_color,
+                    is_selected,
+                    font_id,
                 );
                 Some((rect, angle, anchor))
             }
             _ => {
                 // 其他布局使用标准的右侧标签
                 let rect = self.paint_right_side_tip_label(
-                    painter, label, node_pos, text_color, is_selected, font_id,
+                    painter,
+                    label,
+                    node_pos,
+                    text_color,
+                    is_selected,
+                    font_id,
                 );
                 Some((rect, 0.0, egui::Align2::LEFT_CENTER))
             }
@@ -1139,10 +1506,8 @@ impl TreePainter {
         if is_selected {
             let galley = painter.layout_no_wrap(label.to_string(), font_id.clone(), text_color);
             let size = galley.size();
-            let mut rect = egui::Rect::from_min_size(
-                text_pos + egui::vec2(0.0, -size.y * 0.5),
-                size,
-            );
+            let mut rect =
+                egui::Rect::from_min_size(text_pos + egui::vec2(0.0, -size.y * 0.5), size);
             rect = rect.expand2(egui::Vec2::splat(2.0));
             painter.rect_filled(rect, 3.0, self.tip_selection_color);
         }
@@ -1180,12 +1545,16 @@ impl TreePainter {
         // 1. 计算分支方向角度（在布局坐标系中计算，避免窗口缩放影响）
         let straight_line_angle = if let Some(_parent_id) = node.parent {
             // 查找对应的continuous branch来获取shoulder点
-            if let Some(branch) = layout.continuous_branches.iter().find(|b| b.child == node.id) {
+            if let Some(branch) = layout
+                .continuous_branches
+                .iter()
+                .find(|b| b.child == node.id)
+            {
                 // branch.points的结构是: [child, shoulder, ...arc points..., parent]
                 // 第二个点就是shoulder点（拐角点）
                 if branch.points.len() >= 2 {
-                    let child_world_pos = branch.points[0];  // Tip节点位置
-                    let shoulder_world_pos = branch.points[1];  // 拐角点位置
+                    let child_world_pos = branch.points[0]; // Tip节点位置
+                    let shoulder_world_pos = branch.points[1]; // 拐角点位置
 
                     // 在布局坐标系中计算角度（不受窗口缩放影响）
                     let dx = child_world_pos.0 - shoulder_world_pos.0;
@@ -1221,7 +1590,7 @@ impl TreePainter {
         };
 
         // 2. 标签位置计算
-        let label_offset_distance = 12.0;  // Circular布局的间距
+        let label_offset_distance = 12.0; // Circular布局的间距
         let direction_x = straight_line_angle.cos();
         let direction_y = straight_line_angle.sin();
         let label_offset = egui::vec2(
@@ -1238,13 +1607,17 @@ impl TreePainter {
             angle_deg
         };
 
-        let (text_rotation_angle, text_anchor) = if normalized_angle_deg > 90.0 && normalized_angle_deg < 270.0 {
-            // 文字上下颠倒了，需要翻转180度
-            (straight_line_angle + std::f32::consts::PI, egui::Align2::RIGHT_CENTER)
-        } else {
-            // 文字正常可读
-            (straight_line_angle, egui::Align2::LEFT_CENTER)
-        };
+        let (text_rotation_angle, text_anchor) =
+            if normalized_angle_deg > 90.0 && normalized_angle_deg < 270.0 {
+                // 文字上下颠倒了，需要翻转180度
+                (
+                    straight_line_angle + std::f32::consts::PI,
+                    egui::Align2::RIGHT_CENTER,
+                )
+            } else {
+                // 文字正常可读
+                (straight_line_angle, egui::Align2::LEFT_CENTER)
+            };
 
         // 4. 绘制旋转文字
         let text_rect = painter.rotated_text(
@@ -1261,9 +1634,10 @@ impl TreePainter {
             let expanded_rect = text_rect.expand(2.0);
             let angle_tolerance = 0.1;
 
-            if text_rotation_angle.abs() < angle_tolerance ||
-               (text_rotation_angle - std::f32::consts::PI).abs() < angle_tolerance ||
-               (text_rotation_angle + std::f32::consts::PI).abs() < angle_tolerance {
+            if text_rotation_angle.abs() < angle_tolerance
+                || (text_rotation_angle - std::f32::consts::PI).abs() < angle_tolerance
+                || (text_rotation_angle + std::f32::consts::PI).abs() < angle_tolerance
+            {
                 painter.rect_filled(expanded_rect, 3.0, self.tip_selection_color);
             } else {
                 let galley = painter.layout_no_wrap(label.to_string(), font_id, text_color);
@@ -1287,7 +1661,7 @@ impl TreePainter {
                         egui::vec2(text_size.x, -text_size.y / 2.0),
                         egui::vec2(text_size.x, text_size.y / 2.0),
                         egui::vec2(0.0, text_size.y / 2.0),
-                    ]
+                    ],
                 };
 
                 let expand = 2.0;
@@ -1355,7 +1729,7 @@ impl TreePainter {
 
         // 2. 标签位置计算
         // 从叶节点沿分支方向延伸一小段距离作为间距
-        let label_offset_distance = 8.0;  // Radial布局的间距
+        let label_offset_distance = 8.0; // Radial布局的间距
 
         // 计算标签位置：从节点沿分支方向延伸
         // 这个位置将作为所有文字的定位点（无论使用哪种锚点）
@@ -1365,7 +1739,7 @@ impl TreePainter {
             label_offset_distance * direction_x,
             label_offset_distance * direction_y,
         );
-        let label_pos = node_pos + label_offset;  // 统一的文字定位点
+        let label_pos = node_pos + label_offset; // 统一的文字定位点
 
         // 3. 文字旋转角度处理
         // 对于90度到270度之间的角度，进行180度翻转以增强可读性
@@ -1376,15 +1750,19 @@ impl TreePainter {
             angle_deg
         };
 
-        let (text_rotation_angle, text_anchor) = if normalized_angle_deg > 90.0 && normalized_angle_deg < 270.0 {
-            // 文字上下颠倒了，需要翻转180度
-            // 使用RIGHT_CENTER锚点，但位置仍然是Branch方向延伸出的定位点
-            (branch_angle + std::f32::consts::PI, egui::Align2::RIGHT_CENTER)
-        } else {
-            // 文字正常可读，使用原始角度
-            // 使用LEFT_CENTER锚点，位置是Branch方向延伸出的定位点
-            (branch_angle, egui::Align2::LEFT_CENTER)
-        };
+        let (text_rotation_angle, text_anchor) =
+            if normalized_angle_deg > 90.0 && normalized_angle_deg < 270.0 {
+                // 文字上下颠倒了，需要翻转180度
+                // 使用RIGHT_CENTER锚点，但位置仍然是Branch方向延伸出的定位点
+                (
+                    branch_angle + std::f32::consts::PI,
+                    egui::Align2::RIGHT_CENTER,
+                )
+            } else {
+                // 文字正常可读，使用原始角度
+                // 使用LEFT_CENTER锚点，位置是Branch方向延伸出的定位点
+                (branch_angle, egui::Align2::LEFT_CENTER)
+            };
 
         // 4. 绘制旋转文字
         // label_pos 是统一的定位点：
@@ -1408,9 +1786,10 @@ impl TreePainter {
 
             // 如果角度接近0或文字没有太大旋转，使用简单的矩形
             let angle_tolerance = 0.1; // 约5.7度
-            if text_rotation_angle.abs() < angle_tolerance ||
-               (text_rotation_angle - std::f32::consts::PI).abs() < angle_tolerance ||
-               (text_rotation_angle + std::f32::consts::PI).abs() < angle_tolerance {
+            if text_rotation_angle.abs() < angle_tolerance
+                || (text_rotation_angle - std::f32::consts::PI).abs() < angle_tolerance
+                || (text_rotation_angle + std::f32::consts::PI).abs() < angle_tolerance
+            {
                 painter.rect_filled(expanded_rect, 3.0, self.tip_selection_color);
             } else {
                 // 对于有明显旋转的文字，创建旋转的选择框
@@ -1436,7 +1815,7 @@ impl TreePainter {
                         egui::vec2(text_size.x, -text_size.y / 2.0),
                         egui::vec2(text_size.x, text_size.y / 2.0),
                         egui::vec2(0.0, text_size.y / 2.0),
-                    ]
+                    ],
                 };
 
                 // 添加扩展边距到角点
@@ -1507,10 +1886,7 @@ impl TreePainter {
                     start.x + unit_x * current_dist,
                     start.y + unit_y * current_dist,
                 );
-                let p2 = egui::pos2(
-                    start.x + unit_x * next_dist,
-                    start.y + unit_y * next_dist,
-                );
+                let p2 = egui::pos2(start.x + unit_x * next_dist, start.y + unit_y * next_dist);
                 painter.line_segment([p1, p2], stroke);
             }
 
@@ -1535,7 +1911,12 @@ impl TreePainter {
             let node = &tree.nodes[node_id];
             for &child_id in &node.children {
                 let branch_length = tree.nodes[child_id].length.unwrap_or(1.0);
-                calculate_distances_from_root(child_id, current_distance + branch_length, tree, distances);
+                calculate_distances_from_root(
+                    child_id,
+                    current_distance + branch_length,
+                    tree,
+                    distances,
+                );
             }
         }
 
@@ -1558,7 +1939,8 @@ impl TreePainter {
             if node.is_leaf() {
                 if let Some(&distance) = distances.get(&node.id) {
                     let extension = max_distance - distance;
-                    if extension > 1e-6 {  // Only add if extension is significant
+                    if extension > 1e-6 {
+                        // Only add if extension is significant
                         extensions.insert(node.id, extension);
                     }
                 }
@@ -1647,8 +2029,7 @@ impl TreePainter {
             return None;
         }
 
-        all_leaf_angles
-            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+        all_leaf_angles.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
 
         let total = all_leaf_angles.len();
         let mut index_map = HashMap::with_capacity(total);
@@ -1658,7 +2039,11 @@ impl TreePainter {
 
         let mut leaf_info: Vec<(f32, usize)> = leaf_descendants
             .iter()
-            .filter_map(|node_id| index_map.get(node_id).map(|&idx| (all_leaf_angles[idx].1, idx)))
+            .filter_map(|node_id| {
+                index_map
+                    .get(node_id)
+                    .map(|&idx| (all_leaf_angles[idx].1, idx))
+            })
             .collect();
 
         if leaf_info.is_empty() {
@@ -1723,54 +2108,107 @@ impl TreePainter {
         (a + diff * 0.5).rem_euclid(std::f32::consts::TAU)
     }
 
-    fn draw_radial_highlight_polygon(
+    pub(crate) fn radial_highlight_polygon_points(
         &self,
-        painter: &egui::Painter,
         raw_points: &[egui::Pos2],
-        color: Color32,
-    ) {
+    ) -> Option<Vec<egui::Pos2>> {
         let points = Self::dedup_points(raw_points);
         if points.is_empty() {
-            return;
+            return None;
         }
 
         if points.len() == 1 {
-            painter.circle_filled(points[0], 16.0, color);
-            return;
+            return Some(Self::approximate_circle(points[0], 16.0, 24));
+        }
+
+        if points.len() == 2 {
+            return Some(Self::approximate_capsule(points[0], points[1], 16.0));
         }
 
         let hull = Self::convex_hull(&points);
         if hull.is_empty() {
-            return;
+            return None;
         }
 
         if hull.len() == 1 {
-            painter.circle_filled(hull[0], 16.0, color);
-            return;
+            return Some(Self::approximate_circle(hull[0], 12.0, 24));
         }
 
         if hull.len() == 2 {
-            Self::draw_capsule(painter, hull[0], hull[1], color);
-            return;
-        }
-
-        if hull.len() == 1 {
-            painter.circle_filled(hull[0], 12.0, color);
-            return;
-        }
-
-        if hull.len() == 2 {
-            Self::draw_capsule(painter, hull[0], hull[1], color);
-            return;
+            return Some(Self::approximate_capsule(hull[0], hull[1], 12.0));
         }
 
         let beziers = Self::catmull_rom_to_beziers(&hull);
         let polygon_points = Self::sample_bezier_loop(&beziers, 10);
 
         if polygon_points.len() < 3 {
-            painter.circle_filled(hull[0], 12.0, color);
-            return;
+            return Some(Self::approximate_circle(hull[0], 12.0, 24));
         }
+
+        Some(polygon_points)
+    }
+
+    pub(crate) fn radial_highlight_polygons_mapped<F>(
+        &self,
+        tree: &Tree,
+        layout: &TreeLayout,
+        mut map: F,
+    ) -> Vec<(Vec<egui::Pos2>, Color32)>
+    where
+        F: FnMut((f32, f32)) -> egui::Pos2,
+    {
+        use crate::tree::layout::TreeLayoutType;
+
+        if !matches!(layout.layout_type, TreeLayoutType::Radial) {
+            return Vec::new();
+        }
+
+        let mut polygons = Vec::new();
+
+        for (&highlighted_node_id, &highlight_color) in &self.highlighted_clades {
+            let descendants = self.collect_all_descendants(tree, highlighted_node_id);
+            let leaf_descendants: Vec<NodeId> = descendants
+                .into_iter()
+                .filter(|&id| tree.nodes[id].is_leaf())
+                .collect();
+
+            if leaf_descendants.is_empty() {
+                continue;
+            }
+
+            let mut highlight_points: Vec<egui::Pos2> = leaf_descendants
+                .iter()
+                .map(|&tip_id| map(layout.positions[tip_id]))
+                .collect();
+
+            let node_screen = map(layout.positions[highlighted_node_id]);
+            highlight_points.push(node_screen);
+
+            if let Some(parent_id) = tree.nodes[highlighted_node_id].parent {
+                let parent_screen = map(layout.positions[parent_id]);
+                let direction = node_screen - parent_screen;
+                let length = direction.length().max(1.0);
+                let offset = direction / length * (length * 0.2 + 24.0);
+                highlight_points.push(node_screen + offset);
+            }
+
+            if let Some(polygon_points) = self.radial_highlight_polygon_points(&highlight_points) {
+                polygons.push((polygon_points, highlight_color));
+            }
+        }
+
+        polygons
+    }
+
+    fn draw_radial_highlight_polygon(
+        &self,
+        painter: &egui::Painter,
+        raw_points: &[egui::Pos2],
+        color: Color32,
+    ) {
+        let Some(polygon_points) = self.radial_highlight_polygon_points(raw_points) else {
+            return;
+        };
 
         let mut mesh = egui::Mesh::default();
 
@@ -1778,7 +2216,10 @@ impl TreePainter {
         for p in &polygon_points {
             sum += vec2(p.x, p.y);
         }
-        let centroid = egui::pos2(sum.x / polygon_points.len() as f32, sum.y / polygon_points.len() as f32);
+        let centroid = egui::pos2(
+            sum.x / polygon_points.len() as f32,
+            sum.y / polygon_points.len() as f32,
+        );
 
         let center_index = mesh.vertices.len() as u32;
         mesh.vertices.push(egui::epaint::Vertex {
@@ -1812,7 +2253,10 @@ impl TreePainter {
         let mut unique: Vec<egui::Pos2> = Vec::new();
         const EPS: f32 = 0.5;
         for &point in points {
-            if !unique.iter().any(|p| (p.x - point.x).abs() < EPS && (p.y - point.y).abs() < EPS) {
+            if !unique
+                .iter()
+                .any(|p| (p.x - point.x).abs() < EPS && (p.y - point.y).abs() < EPS)
+            {
                 unique.push(point);
             }
         }
@@ -1826,8 +2270,7 @@ impl TreePainter {
 
         let mut pts = points.to_vec();
         pts.sort_by(|a, b| {
-            a.x
-                .partial_cmp(&b.x)
+            a.x.partial_cmp(&b.x)
                 .unwrap_or(Ordering::Equal)
                 .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(Ordering::Equal))
         });
@@ -2002,12 +2445,7 @@ impl TreePainter {
         egui::pos2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
     }
 
-    fn draw_capsule(
-        painter: &egui::Painter,
-        a: egui::Pos2,
-        b: egui::Pos2,
-        color: Color32,
-    ) {
+    fn draw_capsule(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2, color: Color32) {
         let delta = b - a;
         let length = delta.length();
         let radius = 14.0;
@@ -2090,7 +2528,6 @@ impl TreePainter {
             );
         }
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2134,7 +2571,6 @@ pub enum TipLabelFontFamily {
     Proportional,
     Monospace,
 }
-
 
 impl TipLabelFontFamily {
     pub fn display_name(self) -> &'static str {

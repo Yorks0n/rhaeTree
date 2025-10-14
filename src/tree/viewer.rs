@@ -32,7 +32,7 @@ pub enum SelectionMode {
 #[derive(Debug, Clone)]
 pub struct TreeViewer {
     trees: Vec<Tree>,
-    original_trees: Vec<Tree>, // Store original trees for rerooting
+    original_trees: Vec<Tree>,       // Store original trees for rerooting
     rooted_trees: Vec<Option<Tree>>, // Store rerooted versions
     unordered_trees: Vec<Option<Tree>>, // Store trees before ordering
     current_tree_index: usize,
@@ -597,7 +597,8 @@ impl TreeViewer {
 
         // Create a virtual root node
         let virtual_root_id = new_tree.nodes.len();
-        let mut virtual_root = TreeNode::new(virtual_root_id, Some("__virtual_root__".to_string()), None);
+        let mut virtual_root =
+            TreeNode::new(virtual_root_id, Some("__virtual_root__".to_string()), None);
 
         // Add the virtual root to nodes first
         new_tree.nodes.push(virtual_root);
@@ -611,8 +612,9 @@ impl TreeViewer {
             if let Some(parent) = node.parent {
                 let length = node.length.unwrap_or(1.0);
                 // Skip the edge between child and parent that we're splitting
-                if (node.id == child_node_id && parent == parent_node_id) ||
-                   (node.id == parent_node_id && parent == child_node_id) {
+                if (node.id == child_node_id && parent == parent_node_id)
+                    || (node.id == parent_node_id && parent == child_node_id)
+                {
                     continue;
                 }
                 adjacency[node.id].push((parent, length));
@@ -830,7 +832,11 @@ impl TreeViewer {
     /// If `increasing` is true, smaller clades come first; otherwise larger clades come first
     pub fn apply_node_ordering(&mut self, increasing: bool) {
         // Save current tree before ordering if not already saved
-        if self.unordered_trees.get(self.current_tree_index).map_or(true, |t| t.is_none()) {
+        if self
+            .unordered_trees
+            .get(self.current_tree_index)
+            .map_or(true, |t| t.is_none())
+        {
             if let Some(tree) = self.trees.get(self.current_tree_index).cloned() {
                 if self.current_tree_index < self.unordered_trees.len() {
                     self.unordered_trees[self.current_tree_index] = Some(tree);

@@ -20,7 +20,7 @@ struct DaylightNode {
 struct SubtreeInfo {
     subtree_id: usize,
     left_angle: f32,
-    beta: f32,  // arc angle occupied by subtree
+    beta: f32, // arc angle occupied by subtree
     nodes: Vec<NodeId>,
 }
 
@@ -164,7 +164,8 @@ fn initialize_equal_angle(
         return;
     }
 
-    let total_leaves: usize = node.children
+    let total_leaves: usize = node
+        .children
         .iter()
         .map(|&child| leaf_counts[child].max(1))
         .sum::<usize>()

@@ -69,7 +69,6 @@ pub struct ContinuousBranch {
     pub child: NodeId,
 }
 
-
 pub(super) const DEFAULT_BRANCH_LENGTH: f32 = 1.0;
 pub(super) const ROOT_LENGTH_PROPORTION: f32 = 0.01;
 
@@ -136,10 +135,8 @@ impl TreeLayout {
         let bounds = self.calculate_tip_label_bounds_simple(tree, tip_label_font_size);
 
         // Calculate how much extra space we need for labels
-        let tree_bounds = egui::Rect::from_min_max(
-            egui::pos2(0.0, 0.0),
-            egui::pos2(self.width, self.height)
-        );
+        let tree_bounds =
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(self.width, self.height));
 
         let label_expansion = bounds.union(tree_bounds);
 
@@ -160,8 +157,16 @@ impl TreeLayout {
 
         // Handle negative space more conservatively
         if bounds.min.x < 0.0 || bounds.min.y < 0.0 {
-            let offset_x = if bounds.min.x < 0.0 { (-bounds.min.x).min(self.width * 0.2) } else { 0.0 };
-            let offset_y = if bounds.min.y < 0.0 { (-bounds.min.y).min(self.height * 0.1) } else { 0.0 };
+            let offset_x = if bounds.min.x < 0.0 {
+                (-bounds.min.x).min(self.width * 0.2)
+            } else {
+                0.0
+            };
+            let offset_y = if bounds.min.y < 0.0 {
+                (-bounds.min.y).min(self.height * 0.1)
+            } else {
+                0.0
+            };
 
             if offset_x > 0.0 || offset_y > 0.0 {
                 // Shift all positions
@@ -220,14 +225,19 @@ impl TreeLayout {
 
             let node_pos = self.positions[node.id];
             let label_bounds = self.calculate_single_tip_label_bounds_simple(
-                tree, node, label, node_pos, tip_label_font_size
+                tree,
+                node,
+                label,
+                node_pos,
+                tip_label_font_size,
             );
 
             bounds = bounds.union(label_bounds);
         }
 
         if bounds == egui::Rect::NOTHING {
-            bounds = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(self.width, self.height));
+            bounds =
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(self.width, self.height));
         }
 
         bounds
@@ -254,12 +264,24 @@ impl TreeLayout {
             TreeLayoutType::Circular => {
                 // Calculate bounds for circular layout with rotation
                 let angle = self.calculate_circular_label_angle(tree, node);
-                self.calculate_rotated_label_bounds_simple(node_screen_pos, text_width, text_height, angle, 8.0) // Reduced offset
+                self.calculate_rotated_label_bounds_simple(
+                    node_screen_pos,
+                    text_width,
+                    text_height,
+                    angle,
+                    8.0,
+                ) // Reduced offset
             }
             TreeLayoutType::Radial | TreeLayoutType::Daylight => {
                 // Calculate bounds for radial and daylight layout with rotation
                 let angle = self.calculate_radial_label_angle(tree, node);
-                self.calculate_rotated_label_bounds_simple(node_screen_pos, text_width, text_height, angle, 6.0) // Reduced offset
+                self.calculate_rotated_label_bounds_simple(
+                    node_screen_pos,
+                    text_width,
+                    text_height,
+                    angle,
+                    6.0,
+                ) // Reduced offset
             }
             _ => {
                 // For other layouts, labels are placed to the right
@@ -283,10 +305,7 @@ impl TreeLayout {
         // Calculate label position
         let direction_x = angle.cos();
         let direction_y = angle.sin();
-        let label_offset = egui::vec2(
-            offset_distance * direction_x,
-            offset_distance * direction_y,
-        );
+        let label_offset = egui::vec2(offset_distance * direction_x, offset_distance * direction_y);
         let label_pos = node_pos + label_offset;
 
         // Handle text rotation and anchor
@@ -297,14 +316,20 @@ impl TreeLayout {
             angle_deg
         };
 
-        let (text_rotation_angle, text_anchor) = if normalized_angle_deg > 90.0 && normalized_angle_deg < 270.0 {
-            (angle + std::f32::consts::PI, egui::Align2::RIGHT_CENTER)
-        } else {
-            (angle, egui::Align2::LEFT_CENTER)
-        };
+        let (text_rotation_angle, text_anchor) =
+            if normalized_angle_deg > 90.0 && normalized_angle_deg < 270.0 {
+                (angle + std::f32::consts::PI, egui::Align2::RIGHT_CENTER)
+            } else {
+                (angle, egui::Align2::LEFT_CENTER)
+            };
 
         // Calculate rotated text bounds
-        self.calculate_rotated_text_bounds(label_pos, egui::vec2(text_width, text_height), text_rotation_angle, text_anchor)
+        self.calculate_rotated_text_bounds(
+            label_pos,
+            egui::vec2(text_width, text_height),
+            text_rotation_angle,
+            text_anchor,
+        )
     }
 
     fn calculate_tip_label_bounds(
@@ -326,14 +351,20 @@ impl TreeLayout {
 
             let node_pos = self.positions[node.id];
             let label_bounds = self.calculate_single_tip_label_bounds(
-                tree, node, label, node_pos, painter, font_id.clone()
+                tree,
+                node,
+                label,
+                node_pos,
+                painter,
+                font_id.clone(),
             );
 
             bounds = bounds.union(label_bounds);
         }
 
         if bounds == egui::Rect::NOTHING {
-            bounds = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(self.width, self.height));
+            bounds =
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(self.width, self.height));
         }
 
         bounds
@@ -354,12 +385,26 @@ impl TreeLayout {
             TreeLayoutType::Circular => {
                 // Calculate bounds for circular layout with rotation
                 let angle = self.calculate_circular_label_angle(tree, node);
-                self.calculate_rotated_label_bounds(node_screen_pos, label, painter, font_id, angle, 12.0)
+                self.calculate_rotated_label_bounds(
+                    node_screen_pos,
+                    label,
+                    painter,
+                    font_id,
+                    angle,
+                    12.0,
+                )
             }
             TreeLayoutType::Radial => {
                 // Calculate bounds for radial layout with rotation
                 let angle = self.calculate_radial_label_angle(tree, node);
-                self.calculate_rotated_label_bounds(node_screen_pos, label, painter, font_id, angle, 8.0)
+                self.calculate_rotated_label_bounds(
+                    node_screen_pos,
+                    label,
+                    painter,
+                    font_id,
+                    angle,
+                    8.0,
+                )
             }
             _ => {
                 // For other layouts, labels are placed to the right
@@ -425,10 +470,7 @@ impl TreeLayout {
         // Calculate label position
         let direction_x = angle.cos();
         let direction_y = angle.sin();
-        let label_offset = egui::vec2(
-            offset_distance * direction_x,
-            offset_distance * direction_y,
-        );
+        let label_offset = egui::vec2(offset_distance * direction_x, offset_distance * direction_y);
         let label_pos = node_pos + label_offset;
 
         // Handle text rotation and anchor
@@ -439,11 +481,12 @@ impl TreeLayout {
             angle_deg
         };
 
-        let (text_rotation_angle, text_anchor) = if normalized_angle_deg > 90.0 && normalized_angle_deg < 270.0 {
-            (angle + std::f32::consts::PI, egui::Align2::RIGHT_CENTER)
-        } else {
-            (angle, egui::Align2::LEFT_CENTER)
-        };
+        let (text_rotation_angle, text_anchor) =
+            if normalized_angle_deg > 90.0 && normalized_angle_deg < 270.0 {
+                (angle + std::f32::consts::PI, egui::Align2::RIGHT_CENTER)
+            } else {
+                (angle, egui::Align2::LEFT_CENTER)
+            };
 
         // Calculate rotated text bounds
         self.calculate_rotated_text_bounds(label_pos, text_size, text_rotation_angle, text_anchor)
@@ -477,7 +520,7 @@ impl TreeLayout {
                 egui::vec2(text_size.x, -text_size.y / 2.0),
                 egui::vec2(text_size.x, text_size.y / 2.0),
                 egui::vec2(0.0, text_size.y / 2.0),
-            ]
+            ],
         };
 
         let mut min_x = f32::INFINITY;
@@ -497,7 +540,7 @@ impl TreeLayout {
 
         egui::Rect::from_min_max(
             egui::pos2(pos.x + min_x, pos.y + min_y),
-            egui::pos2(pos.x + max_x, pos.y + max_y)
+            egui::pos2(pos.x + max_x, pos.y + max_y),
         )
     }
 
@@ -512,10 +555,7 @@ impl TreeLayout {
         let text_size = galley.size();
         let text_pos = node_pos + egui::vec2(8.0, 0.0);
 
-        egui::Rect::from_min_size(
-            text_pos + egui::vec2(0.0, -text_size.y * 0.5),
-            text_size,
-        )
+        egui::Rect::from_min_size(text_pos + egui::vec2(0.0, -text_size.y * 0.5), text_size)
     }
 }
 
@@ -557,7 +597,6 @@ pub(super) fn normalize_positions(positions: &mut [(f32, f32)]) -> (f32, f32) {
 
     (width, height)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -614,17 +653,38 @@ mod tests {
 
         // Debug output for coordinate analysis
         println!("=== Circular Layout Coordinate Analysis ===");
-        println!("Layout dimensions: width={:.3}, height={:.3}", layout.width, layout.height);
-        println!("Coordinate range: x=[{:.3}, {:.3}], y=[{:.3}, {:.3}]", min_x, max_x, min_y, max_y);
+        println!(
+            "Layout dimensions: width={:.3}, height={:.3}",
+            layout.width, layout.height
+        );
+        println!(
+            "Coordinate range: x=[{:.3}, {:.3}], y=[{:.3}, {:.3}]",
+            min_x, max_x, min_y, max_y
+        );
         println!("Actual center: ({:.3}, {:.3})", center_x, center_y);
-        println!("Expected center: ({:.3}, {:.3})", expected_center_x, expected_center_y);
-        println!("Center offset: ({:.3}, {:.3})", center_x - expected_center_x, center_y - expected_center_y);
+        println!(
+            "Expected center: ({:.3}, {:.3})",
+            expected_center_x, expected_center_y
+        );
+        println!(
+            "Center offset: ({:.3}, {:.3})",
+            center_x - expected_center_x,
+            center_y - expected_center_y
+        );
 
         // Verify centering (allow small floating point errors)
-        assert!((center_x - expected_center_x).abs() < 1e-3,
-            "Center X mismatch: actual={:.3}, expected={:.3}", center_x, expected_center_x);
-        assert!((center_y - expected_center_y).abs() < 1e-3,
-            "Center Y mismatch: actual={:.3}, expected={:.3}", center_y, expected_center_y);
+        assert!(
+            (center_x - expected_center_x).abs() < 1e-3,
+            "Center X mismatch: actual={:.3}, expected={:.3}",
+            center_x,
+            expected_center_x
+        );
+        assert!(
+            (center_y - expected_center_y).abs() < 1e-3,
+            "Center Y mismatch: actual={:.3}, expected={:.3}",
+            center_y,
+            expected_center_y
+        );
 
         // Circular layout should have positions around center
         for pos in layout.positions {
@@ -664,7 +724,8 @@ mod tests {
         let tree = create_test_tree();
 
         // Test layout without tip labels
-        let layout_without_labels = TreeLayout::from_tree(&tree, TreeLayoutType::Rectangular).unwrap();
+        let layout_without_labels =
+            TreeLayout::from_tree(&tree, TreeLayoutType::Rectangular).unwrap();
         let original_width = layout_without_labels.width;
         let original_height = layout_without_labels.height;
 
@@ -697,7 +758,7 @@ mod tests {
         // Test with tip labels disabled
         let layout_no_labels = layout.clone().with_tip_labels(
             &tree,
-            false,  // disabled
+            false, // disabled
             13.0,
             egui::FontFamily::Proportional,
         );

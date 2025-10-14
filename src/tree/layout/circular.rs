@@ -1,5 +1,8 @@
 use super::rectangular::{self, RectangularLayoutData};
-use super::{ArcSegment, ContinuousBranch, NodeId, RectSegment, RectSegmentKind, Tree, TreeLayout, TreeLayoutType};
+use super::{
+    ArcSegment, ContinuousBranch, NodeId, RectSegment, RectSegmentKind, Tree, TreeLayout,
+    TreeLayoutType,
+};
 
 pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
     let data = rectangular::compute_base(tree)?;
@@ -21,7 +24,15 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
 
     // 首先计算每个节点的角度（叶节点均匀分布，内部节点根据子节点角度计算）
     let mut node_angles = vec![0.0f32; positions.len()];
-    compute_node_angles(tree, tree.root?, &positions, tip_count, angular_range, start_angle, &mut node_angles);
+    compute_node_angles(
+        tree,
+        tree.root?,
+        &positions,
+        tip_count,
+        angular_range,
+        start_angle,
+        &mut node_angles,
+    );
 
     // 然后计算极坐标位置
     // 使用原始的分支长度比例，而不是归一化到[0,1]范围
@@ -54,7 +65,8 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
     }
 
     // 验证居中后的坐标范围确实从(0,0)开始
-    let (final_min_x, _final_max_x, final_min_y, _final_max_y) = calculate_bounding_box(&polar_positions);
+    let (final_min_x, _final_max_x, final_min_y, _final_max_y) =
+        calculate_bounding_box(&polar_positions);
 
     // 如果居中后坐标不是从0开始，进行微调
     if final_min_x.abs() > 1e-3 || final_min_y.abs() > 1e-3 {
@@ -92,11 +104,11 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
 
         let mut parent_polar = (
             parent_radius * parent_angle.cos(),
-            parent_radius * parent_angle.sin()
+            parent_radius * parent_angle.sin(),
         );
         let mut child_polar = (
             child_radius * child_angle.cos(),
-            child_radius * child_angle.sin()
+            child_radius * child_angle.sin(),
         );
 
         // 应用与节点坐标相同的居中变换
@@ -118,7 +130,7 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
         let shoulder_angle = child_angle;
         let mut shoulder_polar = (
             shoulder_radius * shoulder_angle.cos(),
-            shoulder_radius * shoulder_angle.sin()
+            shoulder_radius * shoulder_angle.sin(),
         );
 
         // 对肩点应用相同的居中变换
@@ -142,10 +154,7 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
 
         for i in 1..arc_segment_count {
             let angle = child_angle + angle_step * i as f32;
-            let mut arc_point = (
-                shoulder_radius * angle.cos(),
-                shoulder_radius * angle.sin()
-            );
+            let mut arc_point = (shoulder_radius * angle.cos(), shoulder_radius * angle.sin());
 
             // 对圆弧点应用相同的居中变换
             arc_point.0 = arc_point.0 - center_x + width * 0.5;
@@ -230,7 +239,13 @@ fn compute_node_angles(
 
         for &child_id in &node.children {
             let (child_min, child_max) = compute_node_angles(
-                tree, child_id, positions, tip_count, angular_range, start_angle, node_angles
+                tree,
+                child_id,
+                positions,
+                tip_count,
+                angular_range,
+                start_angle,
+                node_angles,
             );
             min_angle = min_angle.min(child_min);
             max_angle = max_angle.max(child_max);
@@ -271,4 +286,3 @@ fn calculate_bounding_box(positions: &[(f32, f32)]) -> (f32, f32, f32, f32) {
 
     (min_x, max_x, min_y, max_y)
 }
-

@@ -79,6 +79,5 @@ fn assign_cladogram_positions(
     positions[node_id] = (depth as f32, y_pos);
     *max_depth = (*max_depth).max(depth);
 
-
     y_pos
 }

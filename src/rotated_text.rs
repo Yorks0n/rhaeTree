@@ -13,8 +13,15 @@ pub trait RotatedText {
 }
 
 impl RotatedText for Painter {
-    fn rotated_text(&self, pos: Pos2, anchor: Align2, text: impl ToString,
-                    font_id: FontId, text_color: Color32, angle: f32) -> Rect {
+    fn rotated_text(
+        &self,
+        pos: Pos2,
+        anchor: Align2,
+        text: impl ToString,
+        font_id: FontId,
+        text_color: Color32,
+        angle: f32,
+    ) -> Rect {
         let galley = self.layout_no_wrap(text.to_string(), font_id, text_color);
         let text_size = galley.size();
 
@@ -22,9 +29,7 @@ impl RotatedText for Painter {
         let anchor_offset = match anchor {
             Align2::LEFT_CENTER => Vec2::new(0.0, text_size.y / 2.0),
             Align2::RIGHT_CENTER => Vec2::new(text_size.x, text_size.y / 2.0),
-            _ => {
-                anchor.to_sign() * text_size / 2.0
-            }
+            _ => anchor.to_sign() * text_size / 2.0,
         };
 
         // 应用旋转变换到偏移量
@@ -95,7 +100,7 @@ impl RotatedText for Painter {
         // 返回相对于pos的边界框
         Rect::from_min_max(
             Pos2::new(pos.x + min_x, pos.y + min_y),
-            Pos2::new(pos.x + max_x, pos.y + max_y)
+            Pos2::new(pos.x + max_x, pos.y + max_y),
         )
     }
 }
