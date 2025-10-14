@@ -30,6 +30,13 @@ pub struct FigTreeGui {
     color_picker_origin: Option<egui::Pos2>,
     color_picker_popup_open: bool,
     color_picker_popup_rect: Option<egui::Rect>,
+    highlight_picker_open: bool,
+    highlight_picker_hex_input: String,
+    highlight_picker_mode: ColorValueMode,
+    highlight_picker_color: Color32,
+    highlight_picker_origin: Option<egui::Pos2>,
+    highlight_picker_popup_open: bool,
+    highlight_picker_popup_rect: Option<egui::Rect>,
     filter_text: String,
     filter_mode: FilterMode,
     root_tree_enabled: bool,
@@ -42,6 +49,7 @@ pub struct FigTreeGui {
     pending_export_path: Option<(PathBuf, crate::app::ExportFormat)>,
     tree_canvas_rect: Option<egui::Rect>,
     pixels_per_point: f32,
+    highlighted_clade: Option<NodeId>,
 }
 
 #[derive(Default)]
@@ -186,6 +194,13 @@ impl FigTreeGui {
             color_picker_origin: None,
             color_picker_popup_open: false,
             color_picker_popup_rect: None,
+            highlight_picker_open: false,
+            highlight_picker_hex_input: String::new(),
+            highlight_picker_mode: ColorValueMode::Hex,
+            highlight_picker_color: Color32::from_rgba_unmultiplied(255, 255, 0, 80),
+            highlight_picker_origin: None,
+            highlight_picker_popup_open: false,
+            highlight_picker_popup_rect: None,
             filter_text: String::new(),
             filter_mode: FilterMode::Contains,
             root_tree_enabled: false,
@@ -198,6 +213,7 @@ impl FigTreeGui {
             pending_export_path: None,
             tree_canvas_rect: None,
             pixels_per_point: 1.0,
+            highlighted_clade: None,
         };
 
         if let Some(path) = app.config.tree_path.clone() {
@@ -993,6 +1009,16 @@ impl eframe::App for FigTreeGui {
                                 ctx.request_repaint();
                             }
                         }
+
+                        ui.separator();
+
+                        let has_highlights = !self.tree_painter.highlighted_clades().is_empty();
+                        if ui.add_enabled(has_highlights, egui::Button::new("Clear Highlights")).clicked() {
+                            self.tree_painter.clear_highlighted_clades();
+                            self.status = "Cleared all highlights".to_string();
+                            ui.close();
+                            ctx.request_repaint();
+                        }
                     });
                 });
             });
@@ -1062,6 +1088,29 @@ impl eframe::App for FigTreeGui {
                             self.color_picker_origin = Some(color_response.rect.right_top());
                             self.color_picker_popup_open = false;
                             self.color_picker_popup_rect = None;
+                        }
+
+                        // Highlight button
+                        let has_node_selection_for_highlight = !self.tree_viewer.selected_nodes().is_empty();
+                        let highlight_response =
+                            ui.add_enabled(has_node_selection_for_highlight, egui::Button::new("✨ Highlight"));
+                        if highlight_response.clicked() {
+                            // Open highlight color picker
+                            if let Some(&node_id) = self.tree_viewer.selected_nodes().iter().next() {
+                                self.highlighted_clade = Some(node_id);
+                                let initial = self.highlight_picker_color;
+                                self.highlight_picker_hex_input = format!(
+                                    "#{:02X}{:02X}{:02X}",
+                                    initial.r(),
+                                    initial.g(),
+                                    initial.b()
+                                );
+                                self.highlight_picker_mode = ColorValueMode::Hex;
+                                self.highlight_picker_open = true;
+                                self.highlight_picker_origin = Some(highlight_response.rect.right_top());
+                                self.highlight_picker_popup_open = false;
+                                self.highlight_picker_popup_rect = None;
+                            }
                         }
                     });
 
@@ -1324,6 +1373,183 @@ impl eframe::App for FigTreeGui {
         } else {
             self.color_picker_popup_open = false;
             self.color_picker_popup_rect = None;
+        }
+
+        // Highlight color picker window
+        if self.highlight_picker_open {
+            let mut open = self.highlight_picker_open;
+            let mut color = self.highlight_picker_color;
+            let mut window = egui::Window::new("")
+                .resizable(false)
+                .collapsible(false)
+                .title_bar(false)
+                .default_width(110.0);
+
+            if let Some(anchor) = self.highlight_picker_origin {
+                window = window.default_pos(anchor + egui::vec2(12.0, 0.0));
+            }
+
+            let mut request_popup_open = false;
+            let mut window_rect: Option<egui::Rect> = None;
+
+            let window_output = window.open(&mut open).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let toggle_label = match self.highlight_picker_mode {
+                        ColorValueMode::Hex => "Show RGB",
+                        ColorValueMode::Rgb => "Show HEX",
+                    };
+                    if ui.button(toggle_label).clicked() {
+                        self.highlight_picker_mode = match self.highlight_picker_mode {
+                            ColorValueMode::Hex => ColorValueMode::Rgb,
+                            ColorValueMode::Rgb => ColorValueMode::Hex,
+                        };
+                        if matches!(self.highlight_picker_mode, ColorValueMode::Hex) {
+                            self.highlight_picker_hex_input =
+                                format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+                        }
+                    }
+
+                    match self.highlight_picker_mode {
+                        ColorValueMode::Hex => {
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut self.highlight_picker_hex_input)
+                                    .desired_width(60.0),
+                            );
+                            if response.changed() {
+                                if let Some(parsed) = parse_hex_color(&self.highlight_picker_hex_input)
+                                {
+                                    color = parsed;
+                                    self.highlight_picker_hex_input = format!(
+                                        "#{:02X}{:02X}{:02X}",
+                                        color.r(),
+                                        color.g(),
+                                        color.b()
+                                    );
+                                }
+                            }
+                        }
+                        ColorValueMode::Rgb => {
+                            ui.label(format!("RGB: {}, {}, {}", color.r(), color.g(), color.b()));
+                        }
+                    }
+                });
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("Preview:");
+                    let preview = egui::Button::new(" ")
+                        .fill(color)
+                        .min_size(egui::vec2(28.0, 28.0));
+                    if ui.add(preview).clicked() {
+                        request_popup_open = true;
+                    }
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        self.highlight_picker_color = color;
+                        if let Some(node_id) = self.highlighted_clade {
+                            self.tree_painter.add_highlighted_clade(node_id, color);
+                            self.status = format!("Added highlight to clade at node {}", node_id);
+                        }
+                        self.highlight_picker_open = false;
+                        ctx.request_repaint();
+                        self.highlight_picker_popup_open = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.highlighted_clade = None;
+                        self.highlight_picker_open = false;
+                        self.highlight_picker_popup_open = false;
+                    }
+                });
+            });
+
+            if let Some(output) = window_output {
+                window_rect = Some(output.response.rect);
+            }
+
+            if open {
+                self.highlight_picker_popup_rect = window_rect;
+                if request_popup_open {
+                    self.highlight_picker_popup_open = true;
+                }
+            } else {
+                self.highlight_picker_popup_open = false;
+                self.highlight_picker_popup_rect = None;
+            }
+
+            if self.highlight_picker_popup_open {
+                if let Some(parent_rect) = self.highlight_picker_popup_rect {
+                    let mut popup_color = color;
+                    let popup_pos = parent_rect.right_top() + egui::vec2(12.0, 0.0);
+                    egui::Area::new("highlight_picker_popup".into())
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(popup_pos)
+                        .show(ctx, |ui| {
+                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                ui.set_width(140.0);
+                                let mut popup_changed = false;
+                                ui.scope(|ui| {
+                                    let mut style = (**ui.style()).clone();
+                                    style.spacing.slider_width *= 0.6;
+                                    style.spacing.item_spacing *= 0.8;
+                                    ui.set_style(style);
+
+                                    if color_picker::color_picker_color32(
+                                        ui,
+                                        &mut popup_color,
+                                        color_picker::Alpha::OnlyBlend,
+                                    ) {
+                                        popup_changed = true;
+                                    }
+                                });
+
+                                ui.separator();
+                                if ui.button("Close").clicked() {
+                                    self.highlight_picker_popup_open = false;
+                                }
+
+                                if popup_changed {
+                                    self.highlight_picker_hex_input = format!(
+                                        "#{:02X}{:02X}{:02X}",
+                                        popup_color.r(),
+                                        popup_color.g(),
+                                        popup_color.b()
+                                    );
+                                }
+                            });
+                        });
+
+                    if self.highlight_picker_popup_open
+                        && (popup_color.r() != color.r()
+                            || popup_color.g() != color.g()
+                            || popup_color.b() != color.b()
+                            || popup_color.a() != color.a())
+                    {
+                        color = popup_color;
+                        self.highlight_picker_hex_input =
+                            format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+                    }
+                } else {
+                    self.highlight_picker_popup_open = false;
+                }
+            }
+
+            self.highlight_picker_color = color;
+            self.highlight_picker_open = open && self.highlight_picker_open;
+            if self.highlight_picker_open {
+                self.highlight_picker_hex_input =
+                    format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+            } else {
+                self.highlight_picker_origin = None;
+                self.highlight_picker_popup_open = false;
+                self.highlight_picker_popup_rect = None;
+            }
+        } else {
+            self.highlight_picker_popup_open = false;
+            self.highlight_picker_popup_rect = None;
         }
 
         // Left sidebar for controls (narrow)

@@ -64,6 +64,15 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
         }
     }
 
+    // 获取根节点的最终位置作为圆弧的中心
+    // 根节点是进化树形状的真实中心点
+    let root_center = if let Some(root_id) = tree.root {
+        polar_positions[root_id]
+    } else {
+        // 如果没有根节点，使用布局的几何中心
+        (width * 0.5, height * 0.5)
+    };
+
     // 为圆形布局创建连续的分支线段
     let mut continuous_branches = Vec::new();
     let mut rect_segments = Vec::new();
@@ -167,8 +176,10 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
             kind: RectSegmentKind::Horizontal,
         });
 
+        // 使用根节点的位置作为圆弧的中心
+        // 这是进化树形状的真实中心，而不是布局的几何中心
         arc_segments.push(ArcSegment {
-            center: (0.0, 0.0),
+            center: root_center,
             radius: parent_radius,
             start_angle: child_angle,
             end_angle: parent_angle,
