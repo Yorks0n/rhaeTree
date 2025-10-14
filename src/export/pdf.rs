@@ -34,12 +34,6 @@ struct TextElement {
     label_type: LabelType,
 }
 
-#[derive(Debug, Clone)]
-struct HighlightPolygon {
-    points: Vec<(f32, f32)>,
-    color: eframe::egui::Color32,
-}
-
 /// Find system font by name
 fn find_font(font_name: &str) -> Result<String, String> {
     // Try common font names first
@@ -123,7 +117,7 @@ fn generate_svg_without_text(
     painter: &TreePainter,
     width: f32,
     height: f32,
-) -> (String, Vec<TextElement>, Vec<HighlightPolygon>) {
+) -> (String, Vec<TextElement>) {
     use ::svg::node::element::{Circle, Group, Line, Path as SvgPath, Polygon};
     use ::svg::Document;
 
@@ -188,7 +182,6 @@ fn generate_svg_without_text(
 
     // Create group for tree elements
     let mut tree_group = Group::new().set("id", "tree");
-    let mut highlight_polygons: Vec<HighlightPolygon> = Vec::new();
 
     match layout.layout_type {
         TreeLayoutType::Radial => {
@@ -214,24 +207,15 @@ fn generate_svg_without_text(
                         .set("fill-opacity", color_opacity(color))
                         .set("stroke", "none");
                     tree_group = tree_group.add(polygon);
-
-                    highlight_polygons.push(HighlightPolygon {
-                        points: points.iter().map(|p| (p.x, p.y)).collect(),
-                        color,
-                    });
                 }
             } else {
-                let (group, polys) =
+                tree_group =
                     add_standard_highlights_pdf(tree_group, tree, layout, painter, &to_svg_coords);
-                tree_group = group;
-                highlight_polygons.extend(polys);
             }
         }
         _ => {
-            let (group, polys) =
+            tree_group =
                 add_standard_highlights_pdf(tree_group, tree, layout, painter, &to_svg_coords);
-            tree_group = group;
-            highlight_polygons.extend(polys);
         }
     }
 
@@ -470,7 +454,7 @@ fn generate_svg_without_text(
 
     // Return SVG string without text elements
     let svg_string = format!("{}", document);
-    (svg_string, text_elements, highlight_polygons)
+    (svg_string, text_elements)
 }
 
 fn add_standard_highlights_pdf(
@@ -479,9 +463,7 @@ fn add_standard_highlights_pdf(
     layout: &TreeLayout,
     painter: &TreePainter,
     to_svg_coords: &dyn Fn((f32, f32)) -> (f32, f32),
-) -> (::svg::node::element::Group, Vec<HighlightPolygon>) {
-    let mut polygons = Vec::new();
-
+) -> ::svg::node::element::Group {
     for shape in painter.compute_highlight_shapes(tree, layout) {
         match shape {
             crate::tree::painter::HighlightShape::Rect {
@@ -509,16 +491,6 @@ fn add_standard_highlights_pdf(
                     .set("fill-opacity", color_opacity(color))
                     .set("stroke", "none");
                 tree_group = tree_group.add(rect);
-
-                polygons.push(HighlightPolygon {
-                    points: vec![
-                        (min_x, min_y),
-                        (max_x, min_y),
-                        (max_x, max_y),
-                        (min_x, max_y),
-                    ],
-                    color,
-                });
             }
             crate::tree::painter::HighlightShape::Sector {
                 center,
@@ -550,8 +522,6 @@ fn add_standard_highlights_pdf(
                         .set("fill-opacity", color_opacity(color))
                         .set("stroke", "none");
                     tree_group = tree_group.add(polygon);
-
-                    polygons.push(HighlightPolygon { points, color });
                 }
             }
             crate::tree::painter::HighlightShape::Polygon { points, color } => {
@@ -576,16 +546,11 @@ fn add_standard_highlights_pdf(
                     .set("fill-opacity", color_opacity(color))
                     .set("stroke", "none");
                 tree_group = tree_group.add(polygon);
-
-                polygons.push(HighlightPolygon {
-                    points: mapped_points,
-                    color,
-                });
             }
         }
     }
 
-    (tree_group, polygons)
+    tree_group
 }
 
 fn sector_polygon_points(
@@ -649,53 +614,6 @@ fn draw_background(layer: &PdfLayerReference, width_mm: f32, height_mm: f32) {
     layer.add_polygon(polygon);
 }
 
-fn draw_highlight_polygons_pdf(
-    layer: &PdfLayerReference,
-    highlights: &[HighlightPolygon],
-    _width: f32,
-    height: f32,
-) {
-    if highlights.is_empty() {
-        return;
-    }
-
-    for highlight in highlights {
-        if highlight.points.len() < 3 {
-            continue;
-        }
-
-        let [r, g, b, _] = highlight.color.to_srgba_unmultiplied();
-        let alpha = color_opacity(highlight.color);
-        let inv_alpha = 1.0 - alpha;
-        let blended_r = inv_alpha * 255.0 + alpha * r as f32;
-        let blended_g = inv_alpha * 255.0 + alpha * g as f32;
-        let blended_b = inv_alpha * 255.0 + alpha * b as f32;
-        let fill_color = Color::Rgb(Rgb::new(
-            blended_r / 255.0,
-            blended_g / 255.0,
-            blended_b / 255.0,
-            None,
-        ));
-        layer.set_fill_color(fill_color);
-
-        let mut ring: Vec<(Point, bool)> = Vec::with_capacity(highlight.points.len());
-        for (x, y) in &highlight.points {
-            let x_mm = x * 25.4 / 96.0;
-            let y_mm = convert_y(*y, height) * 25.4 / 96.0;
-            ring.push((Point::new(Mm(x_mm), Mm(y_mm)), false));
-        }
-
-        if ring.len() < 3 {
-            continue;
-        }
-
-        let mut polygon = Polygon::default();
-        polygon.mode = PaintMode::Fill;
-        polygon.rings.push(ring);
-        layer.add_polygon(polygon);
-    }
-}
-
 /// Convert Y coordinate from SVG (top-left origin) to PDF (bottom-left origin)
 fn convert_y(y: f32, page_height: f32) -> f32 {
     page_height - y
@@ -716,7 +634,7 @@ pub fn export_pdf(
     height: f32,
 ) -> Result<(), String> {
     // Generate SVG without text and collect text/highlight elements
-    let (svg_string, text_elements, highlight_polygons) =
+    let (svg_string, text_elements) =
         generate_svg_without_text(tree, layout, painter, width, height);
 
     // Convert dimensions from pixels to mm (assuming 96 DPI)
@@ -729,9 +647,8 @@ pub fn export_pdf(
 
     let current_layer = doc.get_page(page1).get_layer(layer1);
 
-    // Draw background and highlights before vector content
+    // Draw background before vector content
     draw_background(&current_layer, width_mm, height_mm);
-    draw_highlight_polygons_pdf(&current_layer, &highlight_polygons, width, height);
 
     // Parse and add SVG (without text) to PDF
     let pdf_svg = Svg::parse(&svg_string).map_err(|e| format!("Failed to parse SVG: {:?}", e))?;
