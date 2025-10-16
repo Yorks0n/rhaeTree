@@ -691,6 +691,7 @@ impl TreePainter {
         selected_tips: &HashSet<NodeId>,
         rect: egui::Rect,
         margin: egui::Vec2,
+        selection_mode: Option<crate::tree::viewer::SelectionMode>,
     ) -> Vec<TipLabelHit> {
         let mut tip_label_hits = Vec::new();
         // Paint background
@@ -960,6 +961,7 @@ impl TreePainter {
                         vec![parent_screen, bend_screen, child_screen],
                         override_color,
                         is_selected,
+                        selection_mode,
                     );
                 }
             }
@@ -977,12 +979,12 @@ impl TreePainter {
                         let override_color =
                             self.branch_color_overrides.get(&branch.child).copied();
                         let is_selected = selected_nodes.contains(&branch.child);
-                        self.draw_branch(painter, screen_points, override_color, is_selected);
+                        self.draw_branch(painter, screen_points, override_color, is_selected, selection_mode);
                     }
                 } else {
                     // 回退到分段绘制（向后兼容）
                     for arc_segment in &layout.arc_segments {
-                        self.draw_arc(painter, arc_segment, &to_screen, inner, selected_nodes);
+                        self.draw_arc(painter, arc_segment, &to_screen, inner, selected_nodes, selection_mode);
                     }
 
                     for segment in &layout.rect_segments {
@@ -1000,6 +1002,7 @@ impl TreePainter {
                             vec![start_screen, end_screen],
                             override_color,
                             is_selected,
+                            selection_mode,
                         );
                     }
                 }
@@ -1018,6 +1021,7 @@ impl TreePainter {
                         vec![parent_screen, child_screen],
                         override_color,
                         is_selected,
+                        selection_mode,
                     );
                 }
             }
@@ -1035,6 +1039,7 @@ impl TreePainter {
                         vec![parent_screen, child_screen],
                         override_color,
                         is_selected,
+                        selection_mode,
                     );
                 }
             }
@@ -1301,11 +1306,18 @@ impl TreePainter {
         points: Vec<egui::Pos2>,
         override_color: Option<Color32>,
         is_selected: bool,
+        selection_mode: Option<crate::tree::viewer::SelectionMode>,
     ) {
         let base_width = self.branch_stroke.width;
         let base_color = override_color.unwrap_or(self.branch_stroke.color);
 
-        if is_selected {
+        // Only highlight branches if not in Taxa mode
+        let should_highlight = is_selected && !matches!(
+            selection_mode,
+            Some(crate::tree::viewer::SelectionMode::Taxa)
+        );
+
+        if should_highlight {
             let highlight_width = self.branch_highlight_stroke.width.max(base_width * 3.0);
             let highlight_stroke = Stroke::new(highlight_width, self.tip_selection_color);
             painter.add(egui::Shape::line(points.clone(), highlight_stroke));
@@ -1415,6 +1427,7 @@ impl TreePainter {
         to_screen: &F,
         _inner: egui::Rect,
         selected_nodes: &HashSet<NodeId>,
+        selection_mode: Option<crate::tree::viewer::SelectionMode>,
     ) where
         F: Fn((f32, f32)) -> egui::Pos2,
     {
@@ -1458,7 +1471,13 @@ impl TreePainter {
         }
 
         // 绘制圆弧
-        if is_selected {
+        // Only highlight branches if not in Taxa mode
+        let should_highlight = is_selected && !matches!(
+            selection_mode,
+            Some(crate::tree::viewer::SelectionMode::Taxa)
+        );
+
+        if should_highlight {
             let highlight_width = self
                 .branch_highlight_stroke
                 .width

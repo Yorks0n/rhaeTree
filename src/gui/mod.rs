@@ -699,6 +699,7 @@ impl FigTreeGui {
                     &selected_tips,
                     rect,
                     margin,
+                    Some(self.tree_viewer.selection_mode()),
                 );
 
                 // Save the canvas rect for export
