@@ -28,16 +28,27 @@ pub enum HighlightShape {
     },
 }
 
+// 用于存储标签绘制信息的结构
+struct TipLabelInfo {
+    rect: egui::Rect,
+    rotation_angle: f32,
+    anchor: egui::Align2,
+    anchor_pos: egui::Pos2,
+    text_size: egui::Vec2,
+}
+
 #[derive(Clone)]
 pub struct TipLabelHit {
     pub node_id: NodeId,
     pub rect: egui::Rect,
-    pub rotation_angle: f32,  // 添加旋转角度信息
-    pub anchor: egui::Align2, // 添加锚点信息
+    pub rotation_angle: f32,  // 旋转角度
+    pub anchor: egui::Align2, // 锚点类型
+    pub anchor_pos: egui::Pos2, // 锚点位置（旋转中心）
+    pub text_size: egui::Vec2,  // 原始文本尺寸
 }
 
 impl TipLabelHit {
-    /// 检测点是否在旋转的标签内
+    /// 检测点是否在旋转的标签内（使用多边形检测）
     pub fn contains(&self, point: egui::Pos2, expand: f32) -> bool {
         // 如果旋转角度很小，使用简单的矩形测试
         let angle_tolerance = 0.1; // 约5.7度
@@ -45,22 +56,82 @@ impl TipLabelHit {
             return self.rect.expand(expand).contains(point);
         }
 
-        // 对于旋转的标签，需要更精确的测试
-        // 将点转换到标签的本地坐标系
-        let rect = self.rect.expand(expand);
-        let center = rect.center();
+        // 对于旋转的标签，使用精确的多边形检测
+        // 计算文本四个角相对于锚点的原始位置
+        let corners = match self.anchor {
+            egui::Align2::LEFT_CENTER => [
+                egui::vec2(0.0, -self.text_size.y / 2.0),
+                egui::vec2(self.text_size.x, -self.text_size.y / 2.0),
+                egui::vec2(self.text_size.x, self.text_size.y / 2.0),
+                egui::vec2(0.0, self.text_size.y / 2.0),
+            ],
+            egui::Align2::RIGHT_CENTER => [
+                egui::vec2(-self.text_size.x, -self.text_size.y / 2.0),
+                egui::vec2(0.0, -self.text_size.y / 2.0),
+                egui::vec2(0.0, self.text_size.y / 2.0),
+                egui::vec2(-self.text_size.x, self.text_size.y / 2.0),
+            ],
+            _ => {
+                // 其他锚点类型的默认处理
+                let half = self.text_size / 2.0;
+                [
+                    egui::vec2(-half.x, -half.y),
+                    egui::vec2(half.x, -half.y),
+                    egui::vec2(half.x, half.y),
+                    egui::vec2(-half.x, half.y),
+                ]
+            }
+        };
 
-        // 将点相对于中心进行反向旋转
-        let dx = point.x - center.x;
-        let dy = point.y - center.y;
-        let cos_a = (-self.rotation_angle).cos();
-        let sin_a = (-self.rotation_angle).sin();
-        let local_x = dx * cos_a - dy * sin_a + center.x;
-        let local_y = dx * sin_a + dy * cos_a + center.y;
-        let local_point = egui::pos2(local_x, local_y);
+        // 添加expand边距并旋转四个角点
+        let cos_a = self.rotation_angle.cos();
+        let sin_a = self.rotation_angle.sin();
 
-        // 在本地坐标系中检测
-        rect.contains(local_point)
+        // 扩展角点（在旋转前扩展）
+        let expanded_corners = [
+            corners[0] + egui::vec2(-expand, -expand),
+            corners[1] + egui::vec2(expand, -expand),
+            corners[2] + egui::vec2(expand, expand),
+            corners[3] + egui::vec2(-expand, expand),
+        ];
+
+        // 旋转并转换到世界坐标
+        let rotated_corners: Vec<egui::Pos2> = expanded_corners
+            .iter()
+            .map(|corner| {
+                let rotated = egui::vec2(
+                    corner.x * cos_a - corner.y * sin_a,
+                    corner.x * sin_a + corner.y * cos_a,
+                );
+                self.anchor_pos + rotated
+            })
+            .collect();
+
+        // 使用点在多边形内的测试算法（射线法）
+        self.point_in_polygon(point, &rotated_corners)
+    }
+
+    /// 检测点是否在多边形内部（射线法）
+    fn point_in_polygon(&self, point: egui::Pos2, polygon: &[egui::Pos2]) -> bool {
+        let mut inside = false;
+        let n = polygon.len();
+
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let xi = polygon[i].x;
+            let yi = polygon[i].y;
+            let xj = polygon[j].x;
+            let yj = polygon[j].y;
+
+            let intersect = ((yi > point.y) != (yj > point.y))
+                && (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
+
+            if intersect {
+                inside = !inside;
+            }
+        }
+
+        inside
     }
 }
 
@@ -1158,7 +1229,7 @@ impl TreePainter {
                         pos
                     };
 
-                    if let Some((text_rect, rotation_angle, anchor)) = self.paint_tip_label(
+                    if let Some(label_info) = self.paint_tip_label(
                         painter,
                         tree,
                         node,
@@ -1171,9 +1242,11 @@ impl TreePainter {
                     ) {
                         tip_label_hits.push(TipLabelHit {
                             node_id: node.id,
-                            rect: text_rect,
-                            rotation_angle,
-                            anchor,
+                            rect: label_info.rect,
+                            rotation_angle: label_info.rotation_angle,
+                            anchor: label_info.anchor,
+                            anchor_pos: label_info.anchor_pos,
+                            text_size: label_info.text_size,
                         });
                     }
                 }
@@ -1487,7 +1560,7 @@ impl TreePainter {
         text_color: Color32,
         is_selected: bool,
         to_screen: &F,
-    ) -> Option<(egui::Rect, f32, egui::Align2)>
+    ) -> Option<TipLabelInfo>
     where
         F: Fn((f32, f32)) -> egui::Pos2,
     {
@@ -1500,7 +1573,7 @@ impl TreePainter {
         match layout.layout_type {
             super::layout::TreeLayoutType::Circular => {
                 // Circular布局使用从中心到Tip的方向
-                let (rect, angle, anchor) = self.paint_circular_tip_label(
+                Some(self.paint_circular_tip_label(
                     painter,
                     node,
                     label,
@@ -1510,12 +1583,11 @@ impl TreePainter {
                     is_selected,
                     font_id,
                     to_screen,
-                );
-                Some((rect, angle, anchor))
+                ))
             }
             super::layout::TreeLayoutType::Radial | super::layout::TreeLayoutType::Daylight => {
                 // Radial和Daylight布局使用从Internal Node到Tip的方向
-                let (rect, angle, anchor) = self.paint_radial_tip_label(
+                Some(self.paint_radial_tip_label(
                     painter,
                     tree,
                     node,
@@ -1526,8 +1598,7 @@ impl TreePainter {
                     is_selected,
                     font_id,
                     to_screen,
-                );
-                Some((rect, angle, anchor))
+                ))
             }
             _ => {
                 // 其他布局使用标准的右侧标签
@@ -1537,9 +1608,20 @@ impl TreePainter {
                     node_pos,
                     text_color,
                     is_selected,
-                    font_id,
+                    font_id.clone(),
                 );
-                Some((rect, 0.0, egui::Align2::LEFT_CENTER))
+                // 获取文本尺寸
+                let galley = painter.layout_no_wrap(label.to_string(), font_id, text_color);
+                let text_size = galley.size();
+                let label_pos = node_pos + egui::vec2(8.0, 0.0); // 右侧标签的位置
+
+                Some(TipLabelInfo {
+                    rect,
+                    rotation_angle: 0.0,
+                    anchor: egui::Align2::LEFT_CENTER,
+                    anchor_pos: label_pos,
+                    text_size,
+                })
             }
         }
     }
@@ -1592,7 +1674,7 @@ impl TreePainter {
         is_selected: bool,
         font_id: FontId,
         to_screen: &F,
-    ) -> (egui::Rect, f32, egui::Align2)
+    ) -> TipLabelInfo
     where
         F: Fn((f32, f32)) -> egui::Pos2,
     {
@@ -1678,7 +1760,11 @@ impl TreePainter {
                 (straight_line_angle, egui::Align2::LEFT_CENTER)
             };
 
-        // 4. 绘制旋转文字
+        // 4. 获取文本尺寸
+        let galley = painter.layout_no_wrap(label.to_string(), font_id.clone(), text_color);
+        let text_size = galley.size();
+
+        // 5. 绘制旋转文字
         let text_rect = painter.rotated_text(
             label_pos,
             text_anchor,
@@ -1688,7 +1774,7 @@ impl TreePainter {
             text_rotation_angle,
         );
 
-        // 5. 绘制选择背景（如果节点被选中）
+        // 6. 绘制选择背景（如果节点被选中）
         if is_selected {
             let expanded_rect = text_rect.expand(2.0);
             let angle_tolerance = 0.1;
@@ -1752,7 +1838,13 @@ impl TreePainter {
             }
         }
 
-        (text_rect, text_rotation_angle, text_anchor)
+        TipLabelInfo {
+            rect: text_rect,
+            rotation_angle: text_rotation_angle,
+            anchor: text_anchor,
+            anchor_pos: label_pos,
+            text_size,
+        }
     }
 
     fn paint_radial_tip_label<F>(
@@ -1767,7 +1859,7 @@ impl TreePainter {
         is_selected: bool,
         font_id: FontId,
         to_screen: &F,
-    ) -> (egui::Rect, f32, egui::Align2)
+    ) -> TipLabelInfo
     where
         F: Fn((f32, f32)) -> egui::Pos2,
     {
@@ -1827,7 +1919,11 @@ impl TreePainter {
                 (branch_angle, egui::Align2::LEFT_CENTER)
             };
 
-        // 4. 绘制旋转文字
+        // 4. 获取文本尺寸
+        let galley = painter.layout_no_wrap(label.to_string(), font_id.clone(), text_color);
+        let text_size = galley.size();
+
+        // 5. 绘制旋转文字
         // label_pos 是统一的定位点：
         // - LEFT_CENTER: 文字从这个点向右延伸
         // - RIGHT_CENTER: 文字从这个点向左延伸
@@ -1913,7 +2009,13 @@ impl TreePainter {
             }
         }
 
-        (text_rect, text_rotation_angle, text_anchor)
+        TipLabelInfo {
+            rect: text_rect,
+            rotation_angle: text_rotation_angle,
+            anchor: text_anchor,
+            anchor_pos: label_pos,
+            text_size,
+        }
     }
 
     /// Draw a dashed line between two points
