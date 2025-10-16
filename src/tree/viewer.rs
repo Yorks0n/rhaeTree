@@ -723,16 +723,30 @@ impl TreeViewer {
 
         if let Some(attr_name) = attribute_name {
             if attr_name == "!name" {
+                // Search both name (original) and label fields
                 if let Some(name) = &node.name {
-                    return Self::matches_text(name, &query, search_type, case_sensitive);
+                    if Self::matches_text(name, &query, search_type, case_sensitive) {
+                        return true;
+                    }
                 }
+                if let Some(label) = &node.label {
+                    if Self::matches_text(label, &query, search_type, case_sensitive) {
+                        return true;
+                    }
+                }
+                return false;
             } else if let Some(value) = node.get_attribute(attr_name) {
                 return Self::matches_text(value, &query, search_type, case_sensitive);
             }
         } else {
-            // Search all attributes
+            // Search all attributes, including both name and label
             if let Some(name) = &node.name {
                 if Self::matches_text(name, &query, search_type, case_sensitive) {
+                    return true;
+                }
+            }
+            if let Some(label) = &node.label {
+                if Self::matches_text(label, &query, search_type, case_sensitive) {
                     return true;
                 }
             }

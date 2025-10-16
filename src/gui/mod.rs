@@ -50,6 +50,26 @@ pub struct FigTreeGui {
     tree_canvas_rect: Option<egui::Rect>,
     pixels_per_point: f32,
     highlighted_clade: Option<NodeId>,
+    annotate_dialog_open: bool,
+    annotate_node_id: Option<NodeId>,
+    annotate_text: String,
+    annotate_field: AnnotateField,
+    last_saved_annotate_field: AnnotateField,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum AnnotateField {
+    Names,
+    Labels,
+}
+
+impl AnnotateField {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Names => "Names",
+            Self::Labels => "Labels",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -214,6 +234,11 @@ impl FigTreeGui {
             tree_canvas_rect: None,
             pixels_per_point: 1.0,
             highlighted_clade: None,
+            annotate_dialog_open: false,
+            annotate_node_id: None,
+            annotate_text: String::new(),
+            annotate_field: AnnotateField::Labels,
+            last_saved_annotate_field: AnnotateField::Labels,
         };
 
         if let Some(path) = app.config.tree_path.clone() {
@@ -1121,6 +1146,36 @@ impl eframe::App for FigTreeGui {
                                     self.highlight_picker_popup_rect = None;
                                 }
                             }
+
+                            // Annotate button
+                            let has_single_tip_selected = self.tree_viewer.selected_tips().len() == 1;
+                            let annotate_response = ui.add_enabled(
+                                has_single_tip_selected,
+                                egui::Button::new("📝 Annotate"),
+                            );
+                            if annotate_response.clicked() {
+                                // Open annotation dialog
+                                if let Some(&tip_id) = self.tree_viewer.selected_tips().iter().next()
+                                {
+                                    if let Some(tree) = self.tree_viewer.current_tree() {
+                                        if let Some(node) = tree.nodes.get(tip_id) {
+                                            self.annotate_node_id = Some(tip_id);
+                                            // Use last saved field choice
+                                            self.annotate_field = self.last_saved_annotate_field;
+                                            // Initialize with current value from the selected field
+                                            self.annotate_text = match self.annotate_field {
+                                                AnnotateField::Names => {
+                                                    node.name.clone().unwrap_or_default()
+                                                }
+                                                AnnotateField::Labels => {
+                                                    node.label.clone().unwrap_or_default()
+                                                }
+                                            };
+                                            self.annotate_dialog_open = true;
+                                        }
+                                    }
+                                }
+                            }
                         },
                     );
 
@@ -1561,6 +1616,102 @@ impl eframe::App for FigTreeGui {
             self.highlight_picker_popup_rect = None;
         }
 
+        // Annotate dialog
+        if self.annotate_dialog_open {
+            let mut open = self.annotate_dialog_open;
+            egui::Window::new("Annotate Tip Label")
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Save to field:");
+                            let old_field = self.annotate_field;
+                            egui::ComboBox::from_id_salt("annotate_field_combo")
+                                .selected_text(self.annotate_field.label())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.annotate_field,
+                                        AnnotateField::Names,
+                                        "Names",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.annotate_field,
+                                        AnnotateField::Labels,
+                                        "Labels",
+                                    );
+                                });
+
+                            // Update text field when field selection changes
+                            if old_field != self.annotate_field {
+                                if let Some(node_id) = self.annotate_node_id {
+                                    if let Some(tree) = self.tree_viewer.current_tree() {
+                                        if let Some(node) = tree.nodes.get(node_id) {
+                                            self.annotate_text = match self.annotate_field {
+                                                AnnotateField::Names => {
+                                                    node.name.clone().unwrap_or_default()
+                                                }
+                                                AnnotateField::Labels => {
+                                                    node.label.clone().unwrap_or_default()
+                                                }
+                                            };
+                                        }
+                                    }
+                                }
+                            }
+                        });
+
+                        ui.add_space(8.0);
+
+                        ui.label("Edit label text:");
+                        ui.text_edit_singleline(&mut self.annotate_text);
+
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Apply").clicked() {
+                                // Apply the annotation
+                                if let Some(node_id) = self.annotate_node_id {
+                                    if let Some(tree) = self.tree_viewer.current_tree_mut() {
+                                        if let Some(node) = tree.node_mut(node_id) {
+                                            match self.annotate_field {
+                                                AnnotateField::Names => {
+                                                    node.name = Some(self.annotate_text.clone());
+                                                }
+                                                AnnotateField::Labels => {
+                                                    node.label = Some(self.annotate_text.clone());
+                                                }
+                                            }
+                                            // Remember the last saved field choice
+                                            self.last_saved_annotate_field = self.annotate_field;
+                                            self.status = format!("Updated {} for tip {}",
+                                                match self.annotate_field {
+                                                    AnnotateField::Names => "name",
+                                                    AnnotateField::Labels => "label",
+                                                },
+                                                node_id
+                                            );
+                                        }
+                                    }
+                                }
+                                open = false;
+                                ctx.request_repaint();
+                            }
+
+                            if ui.button("Cancel").clicked() {
+                                open = false;
+                            }
+                        });
+                    });
+                });
+
+            self.annotate_dialog_open = open;
+            if !open {
+                self.annotate_node_id = None;
+                self.annotate_text.clear();
+            }
+        }
+
         // Left sidebar for controls (narrow)
         egui::SidePanel::left("controls_panel")
             .resizable(true)
@@ -1724,6 +1875,11 @@ impl eframe::App for FigTreeGui {
                                         &mut self.tree_painter.tip_label_display,
                                         TipLabelDisplay::Names,
                                         "Names",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.tip_label_display,
+                                        TipLabelDisplay::Labels,
+                                        "Labels",
                                     );
                                     ui.selectable_value(
                                         &mut self.tree_painter.tip_label_display,

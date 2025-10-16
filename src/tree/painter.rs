@@ -189,7 +189,7 @@ impl Default for TreePainter {
             show_node_shapes: false,
             show_node_bars: false,
             align_tip_labels: false,
-            tip_label_display: TipLabelDisplay::Names,
+            tip_label_display: TipLabelDisplay::Labels,
             tip_label_font_family: TipLabelFontFamily::Proportional,
             tip_label_font_size: 13.0,
             tip_label_format: TipLabelNumberFormat::Decimal,
@@ -1493,6 +1493,7 @@ impl TreePainter {
     pub fn tip_label_text(&self, _tree: &Tree, node: &TreeNode) -> Option<String> {
         match self.tip_label_display {
             TipLabelDisplay::Names => node.name.clone(),
+            TipLabelDisplay::Labels => node.label.clone().or_else(|| node.name.clone()),
             TipLabelDisplay::BranchLength => node.length.map(|value| self.format_numeric(value)),
         }
     }
@@ -2717,6 +2718,7 @@ impl TreePainter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TipLabelDisplay {
     Names,
+    Labels,
     BranchLength,
 }
 
@@ -2724,6 +2726,7 @@ impl TipLabelDisplay {
     pub fn label(self) -> &'static str {
         match self {
             Self::Names => "Names",
+            Self::Labels => "Labels",
             Self::BranchLength => "Branch Length",
         }
     }

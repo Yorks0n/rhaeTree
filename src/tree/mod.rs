@@ -302,6 +302,7 @@ impl Tree {
 pub struct TreeNode {
     pub id: NodeId,
     pub name: Option<String>,
+    pub label: Option<String>, // User-defined label for annotation
     pub length: Option<f64>,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
@@ -313,6 +314,7 @@ impl TreeNode {
         Self {
             id,
             name,
+            label: None,
             length,
             parent: None,
             children: Vec::new(),
