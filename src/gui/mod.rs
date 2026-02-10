@@ -254,7 +254,7 @@ impl FigTreeGui {
             highlight_picker_open: false,
             highlight_picker_hex_input: String::new(),
             highlight_picker_mode: ColorValueMode::Hex,
-            highlight_picker_color: Color32::from_rgba_unmultiplied(255, 255, 0, 80),
+            highlight_picker_color: Color32::from_rgb(255, 255, 180),
             highlight_picker_origin: None,
             highlight_picker_popup_open: false,
             highlight_picker_popup_rect: None,
@@ -723,6 +723,37 @@ impl FigTreeGui {
             }
         }
 
+        fn hash_override_maps<H: Hasher>(
+            h: &mut H,
+            tree: &crate::tree::Tree,
+            painter: &crate::tree::painter::TreePainter,
+        ) {
+            // Keep deterministic order: iterate in node id order.
+            for node in &tree.nodes {
+                node.id.hash(h);
+                if let Some(color) = painter.branch_color_override(node.id) {
+                    1u8.hash(h);
+                    hash_color(h, color);
+                } else {
+                    0u8.hash(h);
+                }
+                if let Some(color) = painter.tip_label_color_override(node.id) {
+                    1u8.hash(h);
+                    hash_color(h, color);
+                } else {
+                    0u8.hash(h);
+                }
+            }
+
+            // Clade highlights map is unordered; sort by node id before hashing.
+            let mut highlighted: Vec<_> = painter.highlighted_clades().iter().collect();
+            highlighted.sort_by_key(|(node_id, _)| **node_id);
+            for (node_id, color) in highlighted {
+                node_id.hash(h);
+                hash_color(h, *color);
+            }
+        }
+
         let mut hasher = DefaultHasher::new();
         hash_tree(&mut hasher, tree);
 
@@ -789,6 +820,7 @@ impl FigTreeGui {
             .node_bar_thickness()
             .to_bits()
             .hash(&mut hasher);
+        hash_override_maps(&mut hasher, tree, &self.tree_painter);
         self.render_backend.hash(&mut hasher);
 
         hasher.finish()
@@ -1382,9 +1414,10 @@ impl eframe::App for FigTreeGui {
                             );
                             if highlight_response.clicked() {
                                 // Open highlight color picker
-                                if let Some(&node_id) =
-                                    self.tree_viewer.selected_nodes().iter().next()
-                                {
+                                let highlighted_root = self
+                                    .selected_branch_node()
+                                    .or_else(|| self.tree_viewer.selected_nodes().iter().next().copied());
+                                if let Some(node_id) = highlighted_root {
                                     self.highlighted_clade = Some(node_id);
                                     let initial = self.highlight_picker_color;
                                     self.highlight_picker_hex_input = format!(
@@ -1698,7 +1731,11 @@ impl eframe::App for FigTreeGui {
         // Highlight color picker window
         if self.highlight_picker_open {
             let mut open = self.highlight_picker_open;
-            let mut color = self.highlight_picker_color;
+            let mut color = Color32::from_rgb(
+                self.highlight_picker_color.r(),
+                self.highlight_picker_color.g(),
+                self.highlight_picker_color.b(),
+            );
             let mut window = egui::Window::new("")
                 .resizable(false)
                 .collapsible(false)
@@ -1770,9 +1807,10 @@ impl eframe::App for FigTreeGui {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Apply").clicked() {
-                        self.highlight_picker_color = color;
+                        let opaque = Color32::from_rgb(color.r(), color.g(), color.b());
+                        self.highlight_picker_color = opaque;
                         if let Some(node_id) = self.highlighted_clade {
-                            self.tree_painter.add_highlighted_clade(node_id, color);
+                            self.tree_painter.add_highlighted_clade(node_id, opaque);
                             self.status = format!("Added highlight to clade at node {}", node_id);
                         }
                         self.highlight_picker_open = false;
@@ -1821,7 +1859,7 @@ impl eframe::App for FigTreeGui {
                                     if color_picker::color_picker_color32(
                                         ui,
                                         &mut popup_color,
-                                        color_picker::Alpha::OnlyBlend,
+                                        color_picker::Alpha::Opaque,
                                     ) {
                                         popup_changed = true;
                                     }
@@ -1846,8 +1884,7 @@ impl eframe::App for FigTreeGui {
                     if self.highlight_picker_popup_open
                         && (popup_color.r() != color.r()
                             || popup_color.g() != color.g()
-                            || popup_color.b() != color.b()
-                            || popup_color.a() != color.a())
+                            || popup_color.b() != color.b())
                     {
                         color = popup_color;
                         self.highlight_picker_hex_input =
@@ -1858,7 +1895,7 @@ impl eframe::App for FigTreeGui {
                 }
             }
 
-            self.highlight_picker_color = color;
+            self.highlight_picker_color = Color32::from_rgb(color.r(), color.g(), color.b());
             self.highlight_picker_open = open && self.highlight_picker_open;
             if self.highlight_picker_open {
                 self.highlight_picker_hex_input =

@@ -152,7 +152,8 @@ impl VelloTreeRenderer {
             .map_err(|err| format!("Vello render_to_texture failed: {err}"))?;
 
         gpu.copy_texture_to_readback(width_px, height_px);
-        let rgba = gpu.map_readback_rgba(width_px, height_px)?;
+        let rgba_premul = gpu.map_readback_rgba(width_px, height_px)?;
+        let rgba = premultiplied_rgba_to_unmultiplied(&rgba_premul);
 
         Ok(SkiaRenderOutput {
             image: egui::ColorImage::from_rgba_unmultiplied(
@@ -608,4 +609,26 @@ fn load_system_sans_font_bundle() -> Option<(Font, FontData)> {
     let fontdue_font = Font::from_bytes(bytes.as_ref().clone(), FontSettings::default()).ok()?;
     let peniko_font = FontData::new(Blob::from(bytes.as_ref().clone()), 0);
     Some((fontdue_font, peniko_font))
+}
+
+fn premultiplied_rgba_to_unmultiplied(src: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(src.len());
+    for px in src.chunks_exact(4) {
+        let a = px[3];
+        if a == 0 {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
+        if a == u8::MAX {
+            out.extend_from_slice(px);
+            continue;
+        }
+
+        let alpha = a as f32 / 255.0;
+        let r = ((px[0] as f32 / alpha).round()).clamp(0.0, 255.0) as u8;
+        let g = ((px[1] as f32 / alpha).round()).clamp(0.0, 255.0) as u8;
+        let b = ((px[2] as f32 / alpha).round()).clamp(0.0, 255.0) as u8;
+        out.extend_from_slice(&[r, g, b, a]);
+    }
+    out
 }
