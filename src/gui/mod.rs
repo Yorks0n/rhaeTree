@@ -74,6 +74,8 @@ pub struct FigTreeGui {
     annotate_text: String,
     annotate_field: AnnotateField,
     last_saved_annotate_field: AnnotateField,
+    undo_stack: Vec<EditState>,
+    redo_stack: Vec<EditState>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -173,6 +175,20 @@ enum RenderBackend {
     Vello,
 }
 
+#[derive(Clone)]
+struct EditState {
+    tree_viewer: TreeViewer,
+    tree_painter: crate::tree::painter::TreePainter,
+    current_layout: crate::tree::layout::TreeLayoutType,
+    root_tree_enabled: bool,
+    root_method: RootMethod,
+    user_root_snapshot: Option<TreeSnapshot>,
+    order_nodes_enabled: bool,
+    node_ordering: NodeOrdering,
+    transform_branches_enabled: bool,
+    branch_transform: BranchTransform,
+}
+
 impl RenderBackend {
     fn label(self) -> &'static str {
         match self {
@@ -221,6 +237,7 @@ fn parse_hex_color(input: &str) -> Option<Color32> {
 impl FigTreeGui {
     const MAX_RENDER_TEXTURE_EDGE: f32 = 8192.0;
     const MAX_RENDER_PIXELS: f32 = 16_000_000.0;
+    const MAX_UNDO_STEPS: usize = 5;
 
     pub fn new(_cc: &eframe::CreationContext<'_>, config: AppConfig) -> Self {
         let mut app = Self {
@@ -289,6 +306,8 @@ impl FigTreeGui {
             annotate_text: String::new(),
             annotate_field: AnnotateField::Labels,
             last_saved_annotate_field: AnnotateField::Labels,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         };
 
         if let Some(path) = app.config.tree_path.clone() {
@@ -301,6 +320,64 @@ impl FigTreeGui {
         app.node_bar_picker_color = app.tree_painter.node_bar_color();
 
         app
+    }
+
+    fn capture_edit_state(&self) -> EditState {
+        EditState {
+            tree_viewer: self.tree_viewer.clone(),
+            tree_painter: self.tree_painter.clone(),
+            current_layout: self.current_layout,
+            root_tree_enabled: self.root_tree_enabled,
+            root_method: self.root_method,
+            user_root_snapshot: self.user_root_snapshot.clone(),
+            order_nodes_enabled: self.order_nodes_enabled,
+            node_ordering: self.node_ordering,
+            transform_branches_enabled: self.transform_branches_enabled,
+            branch_transform: self.branch_transform,
+        }
+    }
+
+    fn restore_edit_state(&mut self, state: EditState) {
+        self.tree_viewer = state.tree_viewer;
+        self.tree_painter = state.tree_painter;
+        self.current_layout = state.current_layout;
+        self.root_tree_enabled = state.root_tree_enabled;
+        self.root_method = state.root_method;
+        self.user_root_snapshot = state.user_root_snapshot;
+        self.order_nodes_enabled = state.order_nodes_enabled;
+        self.node_ordering = state.node_ordering;
+        self.transform_branches_enabled = state.transform_branches_enabled;
+        self.branch_transform = state.branch_transform;
+
+        self.tree_render_signature = None;
+        self.tree_texture = None;
+    }
+
+    fn record_undo_step(&mut self) {
+        self.undo_stack.push(self.capture_edit_state());
+        if self.undo_stack.len() > Self::MAX_UNDO_STEPS {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    fn undo_last_edit(&mut self) {
+        if let Some(previous) = self.undo_stack.pop() {
+            self.redo_stack.push(self.capture_edit_state());
+            self.restore_edit_state(previous);
+            self.status = "Undo applied.".to_string();
+        }
+    }
+
+    fn redo_last_edit(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            self.undo_stack.push(self.capture_edit_state());
+            if self.undo_stack.len() > Self::MAX_UNDO_STEPS {
+                self.undo_stack.remove(0);
+            }
+            self.restore_edit_state(next);
+            self.status = "Redo applied.".to_string();
+        }
     }
 
     fn apply_root_configuration(&mut self, previous_method: Option<RootMethod>) {
@@ -386,6 +463,7 @@ impl FigTreeGui {
 
     fn apply_color_to_selection(&mut self, color: Color32) {
         if !self.tree_viewer.selected_tips().is_empty() {
+            self.record_undo_step();
             for tip in self.tree_viewer.selected_tips() {
                 self.tree_painter.set_tip_label_color(*tip, color);
             }
@@ -408,6 +486,10 @@ impl FigTreeGui {
                 Vec::new()
             };
 
+        if branch_nodes.is_empty() {
+            return;
+        }
+        self.record_undo_step();
         for node_id in branch_nodes {
             self.tree_painter.set_branch_color(node_id, color);
         }
@@ -438,6 +520,8 @@ impl FigTreeGui {
                 }
                 self.tree_viewer.set_trees(bundle.trees.clone());
                 self.tree_painter.clear_color_overrides();
+                self.undo_stack.clear();
+                self.redo_stack.clear();
                 self.config.tree_path = Some(path);
                 self.bundle = Some(bundle);
                 if !self.filter_text.trim().is_empty() {
@@ -1286,6 +1370,20 @@ impl eframe::App for FigTreeGui {
             }
         });
 
+        let (undo_pressed, redo_pressed) = ctx.input(|i| {
+            let undo = i.modifiers.command && i.key_pressed(egui::Key::Z) && !i.modifiers.shift;
+            let redo = (i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z))
+                || (i.modifiers.command && i.key_pressed(egui::Key::Y));
+            (undo, redo)
+        });
+        if undo_pressed {
+            self.undo_last_edit();
+            ctx.request_repaint();
+        } else if redo_pressed {
+            self.redo_last_edit();
+            ctx.request_repaint();
+        }
+
         // Menu bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -1396,6 +1494,23 @@ impl eframe::App for FigTreeGui {
                 });
 
                 ui.menu_button("Edit", |ui| {
+                    if ui
+                        .add_enabled(!self.undo_stack.is_empty(), egui::Button::new("Undo"))
+                        .clicked()
+                    {
+                        self.undo_last_edit();
+                        ui.close();
+                        ctx.request_repaint();
+                    }
+                    if ui
+                        .add_enabled(!self.redo_stack.is_empty(), egui::Button::new("Redo"))
+                        .clicked()
+                    {
+                        self.redo_last_edit();
+                        ui.close();
+                        ctx.request_repaint();
+                    }
+                    ui.separator();
                     if ui.button("Clear Selection").clicked() {
                         self.tree_viewer.clear_selection();
                         ui.close();
@@ -1410,6 +1525,7 @@ impl eframe::App for FigTreeGui {
                         .clicked()
                     {
                         if let Some(target) = branch_target {
+                            self.record_undo_step();
                             self.tree_viewer.reroot_at_node(target);
                             self.color_picker_open = false;
                             self.color_picker_popup_open = false;
@@ -1432,6 +1548,10 @@ impl eframe::App for FigTreeGui {
                     ui.separator();
 
                     if ui.button("Order Increasing").clicked() {
+                        let can_order = self.tree_viewer.current_tree().is_some();
+                        if can_order {
+                            self.record_undo_step();
+                        }
                         if let Some(tree) = self.tree_viewer.current_tree_mut() {
                             tree.order_nodes(true);
                             self.status = "Ordered nodes by increasing clade size.".to_string();
@@ -1441,6 +1561,10 @@ impl eframe::App for FigTreeGui {
                     }
 
                     if ui.button("Order Decreasing").clicked() {
+                        let can_order = self.tree_viewer.current_tree().is_some();
+                        if can_order {
+                            self.record_undo_step();
+                        }
                         if let Some(tree) = self.tree_viewer.current_tree_mut() {
                             tree.order_nodes(false);
                             self.status = "Ordered nodes by decreasing clade size.".to_string();
@@ -1456,6 +1580,7 @@ impl eframe::App for FigTreeGui {
                         .add_enabled(has_highlights, egui::Button::new("Clear Highlights"))
                         .clicked()
                     {
+                        self.record_undo_step();
                         self.tree_painter.clear_highlighted_clades();
                         self.status = "Cleared all highlights".to_string();
                         ui.close();
@@ -1481,6 +1606,7 @@ impl eframe::App for FigTreeGui {
                             );
                             if reroot_response.clicked() {
                                 if let Some(target) = branch_target {
+                                    self.record_undo_step();
                                     self.tree_viewer.reroot_at_node(target);
                                     self.color_picker_open = false;
                                     self.color_picker_popup_open = false;
@@ -1508,6 +1634,7 @@ impl eframe::App for FigTreeGui {
                                 if let Some(&node_id) =
                                     self.tree_viewer.selected_nodes().iter().next()
                                 {
+                                    self.record_undo_step();
                                     if let Some(tree) = self.tree_viewer.current_tree_mut() {
                                         tree.rotate_node(node_id);
                                         self.status = format!("Rotated node {}", node_id);
@@ -1941,6 +2068,7 @@ impl eframe::App for FigTreeGui {
                         let opaque = Color32::from_rgb(color.r(), color.g(), color.b());
                         self.highlight_picker_color = opaque;
                         if let Some(node_id) = self.highlighted_clade {
+                            self.record_undo_step();
                             self.tree_painter.add_highlighted_clade(node_id, opaque);
                             self.status = format!("Added highlight to clade at node {}", node_id);
                         }
@@ -2283,6 +2411,7 @@ impl eframe::App for FigTreeGui {
                             if ui.button("Apply").clicked() {
                                 // Apply the annotation
                                 if let Some(node_id) = self.annotate_node_id {
+                                    self.record_undo_step();
                                     if let Some(tree) = self.tree_viewer.current_tree_mut() {
                                         if let Some(node) = tree.node_mut(node_id) {
                                             match self.annotate_field {
@@ -2899,6 +3028,7 @@ impl eframe::App for FigTreeGui {
 
                         let mut root_enabled = self.root_tree_enabled;
                         if ui.checkbox(&mut root_enabled, "Root tree").changed() {
+                            self.record_undo_step();
                             self.root_tree_enabled = root_enabled;
                             self.apply_root_configuration(None);
                         }
@@ -2930,6 +3060,7 @@ impl eframe::App for FigTreeGui {
                             .inner;
 
                         if combo_changed && self.root_method != method {
+                            self.record_undo_step();
                             let previous_method = self.root_method;
                             self.root_method = method;
                             self.apply_root_configuration(Some(previous_method));
@@ -2940,6 +3071,7 @@ impl eframe::App for FigTreeGui {
                         // Order nodes checkbox and combobox
                         let mut order_enabled = self.order_nodes_enabled;
                         if ui.checkbox(&mut order_enabled, "Order nodes").changed() {
+                            self.record_undo_step();
                             let previous_enabled = self.order_nodes_enabled;
                             self.order_nodes_enabled = order_enabled;
 
@@ -2973,6 +3105,7 @@ impl eframe::App for FigTreeGui {
                                     });
                             });
                             if self.order_nodes_enabled && ordering != self.node_ordering {
+                                self.record_undo_step();
                                 self.node_ordering = ordering;
                                 // Apply ordering when changed
                                 let increasing = matches!(ordering, NodeOrdering::Increasing);
