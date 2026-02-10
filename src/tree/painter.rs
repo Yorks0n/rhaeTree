@@ -231,83 +231,82 @@ impl TreePainter {
         };
 
         // Pre-calculate parameters for circular/radial layouts
-        let (layout_center, layout_radius, available_radius, center_x, center_y) =
-            match layout.layout_type {
-                super::layout::TreeLayoutType::Circular
-                | super::layout::TreeLayoutType::Radial
-                | super::layout::TreeLayoutType::Daylight => {
-                    // Reserve radial margin for visible tip labels to reduce clipping.
-                    // This is independent of align_tip_labels for circular/radial layouts.
-                    let label_margin = if self.show_tip_labels {
-                        let max_chars = tree
-                            .nodes
-                            .iter()
-                            .filter(|n| n.is_leaf())
-                            .filter_map(|n| self.tip_label_text(tree, n))
-                            .map(|s| s.chars().count())
-                            .max()
-                            .unwrap_or(0) as f32;
-                        let text_w = max_chars * self.tip_label_font_size * 0.56;
-                        let text_h = self.tip_label_font_size.max(8.0);
-                        let text_radius = text_w.max(text_h) * 0.5;
-                        let offset = if matches!(
-                            layout.layout_type,
-                            super::layout::TreeLayoutType::Circular
-                        ) {
+        let (layout_center, layout_radius, available_radius, center_x, center_y) = match layout
+            .layout_type
+        {
+            super::layout::TreeLayoutType::Circular
+            | super::layout::TreeLayoutType::Radial
+            | super::layout::TreeLayoutType::Daylight => {
+                // Reserve radial margin for visible tip labels to reduce clipping.
+                // This is independent of align_tip_labels for circular/radial layouts.
+                let label_margin = if self.show_tip_labels {
+                    let max_chars = tree
+                        .nodes
+                        .iter()
+                        .filter(|n| n.is_leaf())
+                        .filter_map(|n| self.tip_label_text(tree, n))
+                        .map(|s| s.chars().count())
+                        .max()
+                        .unwrap_or(0) as f32;
+                    let text_w = max_chars * self.tip_label_font_size * 0.56;
+                    let text_h = self.tip_label_font_size.max(8.0);
+                    let text_radius = text_w.max(text_h) * 0.5;
+                    let offset =
+                        if matches!(layout.layout_type, super::layout::TreeLayoutType::Circular) {
                             12.0
                         } else {
                             8.0
                         };
-                        let max_margin = inner.width().min(inner.height()) * 0.30;
-                        (offset + text_radius).min(max_margin)
-                    } else {
-                        0.0
-                    };
-                    let base_radius = inner.width().min(inner.height()) * 0.5;
-                    let min_radius = inner.width().min(inner.height()) * 0.12;
-                    let available_radius = (base_radius - label_margin - 2.0).max(min_radius);
+                    let max_margin = inner.width().min(inner.height()) * 0.30;
+                    (offset + text_radius).min(max_margin)
+                } else {
+                    0.0
+                };
+                let base_radius = inner.width().min(inner.height()) * 0.5;
+                let min_radius = inner.width().min(inner.height()) * 0.12;
+                let available_radius = (base_radius - label_margin - 2.0).max(min_radius);
 
-                    // 获取根节点位置作为圆的中心（进化树形状的真实中心）
-                    let layout_center =
-                        if matches!(layout.layout_type, super::layout::TreeLayoutType::Circular) {
-                            if let Some(root_id) = tree.root {
-                                layout.positions[root_id]
-                            } else {
-                                (layout.width * 0.5, layout.height * 0.5)
-                            }
+                // 获取根节点位置作为圆的中心（进化树形状的真实中心）
+                let layout_center =
+                    if matches!(layout.layout_type, super::layout::TreeLayoutType::Circular) {
+                        if let Some(root_id) = tree.root {
+                            layout.positions[root_id]
                         } else {
                             (layout.width * 0.5, layout.height * 0.5)
-                        };
+                        }
+                    } else {
+                        (layout.width * 0.5, layout.height * 0.5)
+                    };
 
-                    // Radius for circular/radial/daylight should be based on actual geometry,
-                    // not rectangular tip-extension logic.
-                    let mut max_radius = 0.0f32;
-                    for node in &tree.nodes {
-                        let pos = layout.positions[node.id];
-                        let dx = pos.0 - layout_center.0;
-                        let dy = pos.1 - layout_center.1;
-                        let radius = (dx * dx + dy * dy).sqrt();
-                        max_radius = max_radius.max(radius);
-                    }
-                    let layout_radius = max_radius.max(1e-6);
-
-                    // 计算画布中心
-                    let center_x = inner.left() + inner.width() * 0.5;
-                    let center_y = inner.top() + inner.height() * 0.5;
-
-                    (
-                        layout_center,
-                        layout_radius,
-                        available_radius,
-                        center_x,
-                        center_y,
-                    )
+                // Radius for circular/radial/daylight should be based on actual geometry,
+                // not rectangular tip-extension logic.
+                let mut max_radius = 0.0f32;
+                for node in &tree.nodes {
+                    let pos = layout.positions[node.id];
+                    let dx = pos.0 - layout_center.0;
+                    let dy = pos.1 - layout_center.1;
+                    let radius = (dx * dx + dy * dy).sqrt();
+                    max_radius = max_radius.max(radius);
                 }
-                _ => {
-                    // For non-circular layouts, these values won't be used
-                    ((0.0, 0.0), 1.0, 1.0, 0.0, 0.0)
-                }
-            };
+                let layout_radius = max_radius.max(1e-6);
+
+                // 计算画布中心
+                let center_x = inner.left() + inner.width() * 0.5;
+                let center_y = inner.top() + inner.height() * 0.5;
+
+                (
+                    layout_center,
+                    layout_radius,
+                    available_radius,
+                    center_x,
+                    center_y,
+                )
+            }
+            _ => {
+                // For non-circular layouts, these values won't be used
+                ((0.0, 0.0), 1.0, 1.0, 0.0, 0.0)
+            }
+        };
 
         let layout_type = layout.layout_type;
         let inner_left = inner.left();

@@ -37,7 +37,11 @@ pub(crate) fn build_export_scene(
     let margin_y = (height * 0.05).max(20.0).min(40.0);
     let margin = egui::vec2(margin_x, margin_y);
     let candidate = rect.shrink2(margin);
-    let inner = if candidate.is_positive() { candidate } else { rect };
+    let inner = if candidate.is_positive() {
+        candidate
+    } else {
+        rect
+    };
 
     build_tree_scene(
         tree,
@@ -232,12 +236,7 @@ pub(crate) fn scene_to_svg_document(scene: &TreeSceneGraph) -> Document {
                 if angle.abs() > f32::EPSILON {
                     node = node.set(
                         "transform",
-                        format!(
-                            "rotate({} {} {})",
-                            angle.to_degrees(),
-                            anchor.x,
-                            anchor.y
-                        ),
+                        format!("rotate({} {} {})", angle.to_degrees(), anchor.x, anchor.y),
                     );
                 }
                 node = node.add(SvgText::new(text.clone()));

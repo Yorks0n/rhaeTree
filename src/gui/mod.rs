@@ -14,8 +14,9 @@ use crate::app::{AppConfig, ExportFormat};
 use crate::io;
 use crate::tree::painter::{TipLabelDisplay, TipLabelFontFamily, TipLabelNumberFormat};
 use crate::tree::skia_renderer::SkiaTreeRenderer;
+use crate::tree::vello_renderer::VelloTreeRenderer;
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
-use crate::tree::{NodeId, TreeBundle};
+use crate::tree::{NodeId, Tree, TreeBundle};
 use crate::ui;
 
 pub struct FigTreeGui {
@@ -63,7 +64,9 @@ pub struct FigTreeGui {
     tree_texture: Option<egui::TextureHandle>,
     tree_render_signature: Option<u64>,
     cached_tip_label_hits_local: Vec<crate::tree::painter::TipLabelHit>,
+    render_backend: RenderBackend,
     skia_renderer: SkiaTreeRenderer,
+    vello_renderer: VelloTreeRenderer,
     pixels_per_point: f32,
     highlighted_clade: Option<NodeId>,
     annotate_dialog_open: bool,
@@ -160,6 +163,21 @@ impl BranchTransform {
             Self::Equal => "equal",
             Self::Cladogram => "cladogram",
             Self::Proportional => "proportional",
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+enum RenderBackend {
+    Skia,
+    Vello,
+}
+
+impl RenderBackend {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Skia => "Skia",
+            Self::Vello => "Vello (Experimental)",
         }
     }
 }
@@ -261,7 +279,9 @@ impl FigTreeGui {
             tree_texture: None,
             tree_render_signature: None,
             cached_tip_label_hits_local: Vec::new(),
+            render_backend: RenderBackend::Vello,
             skia_renderer: SkiaTreeRenderer::new(),
+            vello_renderer: VelloTreeRenderer::new(),
             pixels_per_point: 1.0,
             highlighted_clade: None,
             annotate_dialog_open: false,
@@ -646,7 +666,9 @@ impl FigTreeGui {
         Ok(())
     }
 
-    fn build_display_tree_layout(&self) -> Option<(crate::tree::Tree, crate::tree::layout::TreeLayout)> {
+    fn build_display_tree_layout(
+        &self,
+    ) -> Option<(crate::tree::Tree, crate::tree::layout::TreeLayout)> {
         let mut tree = self.tree_viewer.current_tree()?.clone();
 
         if self.transform_branches_enabled {
@@ -657,17 +679,23 @@ impl FigTreeGui {
             }
         }
 
-        let layout = crate::tree::layout::TreeLayout::from_tree(&tree, self.current_layout)?.with_tip_labels(
-            &tree,
-            self.tree_painter.show_tip_labels,
-            self.tree_painter.tip_label_font_size,
-            self.tree_painter.tip_label_font_family.into_font_family(),
-        );
+        let layout = crate::tree::layout::TreeLayout::from_tree(&tree, self.current_layout)?
+            .with_tip_labels(
+                &tree,
+                self.tree_painter.show_tip_labels,
+                self.tree_painter.tip_label_font_size,
+                self.tree_painter.tip_label_font_family.into_font_family(),
+            );
 
         Some((tree, layout))
     }
 
-    fn render_signature(&self, tree: &crate::tree::Tree, canvas_width: f32, canvas_height: f32) -> u64 {
+    fn render_signature(
+        &self,
+        tree: &crate::tree::Tree,
+        canvas_width: f32,
+        canvas_height: f32,
+    ) -> u64 {
         fn hash_color<H: Hasher>(h: &mut H, c: Color32) {
             c.r().hash(h);
             c.g().hash(h);
@@ -707,14 +735,26 @@ impl FigTreeGui {
         hash_node_set(&mut hasher, self.tree_viewer.selected_tips());
 
         self.tree_viewer.zoom.to_bits().hash(&mut hasher);
-        self.tree_viewer.vertical_expansion().to_bits().hash(&mut hasher);
+        self.render_backend.hash(&mut hasher);
+        self.tree_viewer
+            .vertical_expansion()
+            .to_bits()
+            .hash(&mut hasher);
         canvas_width.to_bits().hash(&mut hasher);
         canvas_height.to_bits().hash(&mut hasher);
         self.pixels_per_point.to_bits().hash(&mut hasher);
 
-        self.tree_painter.branch_stroke.width.to_bits().hash(&mut hasher);
+        self.tree_painter
+            .branch_stroke
+            .width
+            .to_bits()
+            .hash(&mut hasher);
         hash_color(&mut hasher, self.tree_painter.branch_stroke.color);
-        self.tree_painter.branch_highlight_stroke.width.to_bits().hash(&mut hasher);
+        self.tree_painter
+            .branch_highlight_stroke
+            .width
+            .to_bits()
+            .hash(&mut hasher);
         hash_color(&mut hasher, self.tree_painter.branch_highlight_stroke.color);
         self.tree_painter.node_radius.to_bits().hash(&mut hasher);
         hash_color(&mut hasher, self.tree_painter.leaf_color);
@@ -737,14 +777,64 @@ impl FigTreeGui {
         self.tree_painter.align_tip_labels.hash(&mut hasher);
         self.tree_painter.tip_label_display.hash(&mut hasher);
         self.tree_painter.tip_label_font_family.hash(&mut hasher);
-        self.tree_painter.tip_label_font_size.to_bits().hash(&mut hasher);
+        self.tree_painter
+            .tip_label_font_size
+            .to_bits()
+            .hash(&mut hasher);
         self.tree_painter.tip_label_format.hash(&mut hasher);
         self.tree_painter.tip_label_precision.hash(&mut hasher);
         self.tree_painter.node_bar_field().hash(&mut hasher);
         hash_color(&mut hasher, self.tree_painter.node_bar_color());
-        self.tree_painter.node_bar_thickness().to_bits().hash(&mut hasher);
+        self.tree_painter
+            .node_bar_thickness()
+            .to_bits()
+            .hash(&mut hasher);
+        self.render_backend.hash(&mut hasher);
 
         hasher.finish()
+    }
+
+    fn render_with_current_backend(
+        &mut self,
+        tree: &Tree,
+        layout: &crate::tree::layout::TreeLayout,
+        rect: egui::Rect,
+        inner: egui::Rect,
+        selected_nodes: &std::collections::HashSet<NodeId>,
+        selected_tips: &std::collections::HashSet<NodeId>,
+        canvas_width: f32,
+        canvas_height: f32,
+    ) -> Result<crate::tree::skia_renderer::SkiaRenderOutput, String> {
+        match self.render_backend {
+            RenderBackend::Skia => self.skia_renderer.render(
+                tree,
+                layout,
+                &self.tree_painter,
+                selected_nodes,
+                selected_tips,
+                rect,
+                inner,
+                inner,
+                1.0,
+                Some(self.tree_viewer.selection_mode()),
+                self.pixels_per_point,
+                self.render_resolution_scale(canvas_width, canvas_height),
+            ),
+            RenderBackend::Vello => self.vello_renderer.render(
+                tree,
+                layout,
+                &self.tree_painter,
+                selected_nodes,
+                selected_tips,
+                rect,
+                inner,
+                inner,
+                1.0,
+                Some(self.tree_viewer.selection_mode()),
+                self.pixels_per_point,
+                self.render_resolution_scale(canvas_width, canvas_height),
+            ),
+        }
     }
 
     fn render_resolution_scale(&self, canvas_width: f32, canvas_height: f32) -> f32 {
@@ -831,19 +921,15 @@ impl FigTreeGui {
                     let selected_nodes = self.tree_viewer.selected_nodes().clone();
                     let selected_tips = self.tree_viewer.selected_tips().clone();
 
-                    match self.skia_renderer.render(
+                    match self.render_with_current_backend(
                         &tree,
                         &layout,
-                        &self.tree_painter,
-                        &selected_nodes,
-                        &selected_tips,
                         rect,
                         inner,
-                        inner,
-                        1.0,
-                        Some(self.tree_viewer.selection_mode()),
-                        self.pixels_per_point,
-                        self.render_resolution_scale(canvas_width, canvas_height),
+                        &selected_nodes,
+                        &selected_tips,
+                        canvas_width,
+                        canvas_height,
                     ) {
                         Ok(output) => {
                             if let Some(texture) = self.tree_texture.as_mut() {
@@ -901,7 +987,10 @@ impl FigTreeGui {
                             .tree_painter
                             .create_to_screen_transform(&tree, &layout, inner);
 
-                        fn distance_to_segment(point: egui::Pos2, seg: (egui::Pos2, egui::Pos2)) -> f32 {
+                        fn distance_to_segment(
+                            point: egui::Pos2,
+                            seg: (egui::Pos2, egui::Pos2),
+                        ) -> f32 {
                             let ap = point - seg.0;
                             let ab = seg.1 - seg.0;
                             let len_sq = ab.length_sq();
@@ -957,8 +1046,11 @@ impl FigTreeGui {
                                         for i in 0..branch.points.len() - 1 {
                                             let p1 = to_screen(branch.points[i]);
                                             let p2 = to_screen(branch.points[i + 1]);
-                                            let distance = distance_to_segment(pointer_pos, (p1, p2));
-                                            if distance <= branch_hit_radius && distance < best_distance {
+                                            let distance =
+                                                distance_to_segment(pointer_pos, (p1, p2));
+                                            if distance <= branch_hit_radius
+                                                && distance < best_distance
+                                            {
                                                 best_branch = Some(branch.child);
                                                 best_distance = distance;
                                             }
@@ -980,8 +1072,12 @@ impl FigTreeGui {
 
                             if let Some(branch_child) = best_branch {
                                 match mode {
-                                    SelectionMode::Nodes => self.tree_viewer.select_branch_node(branch_child),
-                                    SelectionMode::Clade => self.tree_viewer.select_clade_nodes(branch_child),
+                                    SelectionMode::Nodes => {
+                                        self.tree_viewer.select_branch_node(branch_child)
+                                    }
+                                    SelectionMode::Clade => {
+                                        self.tree_viewer.select_clade_nodes(branch_child)
+                                    }
                                     SelectionMode::Taxa | SelectionMode::Tips => {
                                         self.tree_viewer.select_clade_tips(branch_child)
                                     }
@@ -2169,6 +2265,28 @@ impl eframe::App for FigTreeGui {
                 let appearance_response = egui::CollapsingHeader::new("Appearance")
                     .default_open(self.panel_states.appearance_expanded)
                     .show(ui, |ui| {
+                        ui.label("Renderer:");
+                        let old_backend = self.render_backend;
+                        egui::ComboBox::from_id_salt("renderer_backend")
+                            .selected_text(self.render_backend.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.render_backend,
+                                    RenderBackend::Skia,
+                                    RenderBackend::Skia.label(),
+                                );
+                                ui.selectable_value(
+                                    &mut self.render_backend,
+                                    RenderBackend::Vello,
+                                    RenderBackend::Vello.label(),
+                                );
+                            });
+                        if self.render_backend != old_backend {
+                            self.tree_render_signature = None;
+                            self.last_error = None;
+                        }
+
+                        ui.separator();
                         ui.label("Line Width:");
                         ui.add(
                             egui::Slider::new(

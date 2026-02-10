@@ -152,10 +152,15 @@ pub fn build_tree_scene(
             let color = if is_selected {
                 selected_branch_color
             } else {
-                painter.branch_color_override(*child).unwrap_or(branch_color)
+                painter
+                    .branch_color_override(*child)
+                    .unwrap_or(branch_color)
             };
             let width = if is_selected {
-                painter.branch_highlight_stroke.width.max(branch_width * 1.8)
+                painter
+                    .branch_highlight_stroke
+                    .width
+                    .max(branch_width * 1.8)
             } else {
                 branch_width
             };
@@ -199,7 +204,10 @@ pub fn build_tree_scene(
                     .unwrap_or(branch_color)
             };
             let width = if is_selected {
-                painter.branch_highlight_stroke.width.max(branch_width * 1.8)
+                painter
+                    .branch_highlight_stroke
+                    .width
+                    .max(branch_width * 1.8)
             } else {
                 branch_width
             };
@@ -224,10 +232,15 @@ pub fn build_tree_scene(
             let color = if is_selected {
                 selected_branch_color
             } else {
-                painter.branch_color_override(*child).unwrap_or(branch_color)
+                painter
+                    .branch_color_override(*child)
+                    .unwrap_or(branch_color)
             };
             let width = if is_selected {
-                painter.branch_highlight_stroke.width.max(branch_width * 1.8)
+                painter
+                    .branch_highlight_stroke
+                    .width
+                    .max(branch_width * 1.8)
             } else {
                 branch_width
             };
@@ -355,7 +368,9 @@ pub fn build_tree_scene(
                         .tip_label_color_override(node.id)
                         .unwrap_or(painter.label_color);
                     match layout.layout_type {
-                        TreeLayoutType::Circular | TreeLayoutType::Radial | TreeLayoutType::Daylight => {
+                        TreeLayoutType::Circular
+                        | TreeLayoutType::Radial
+                        | TreeLayoutType::Daylight => {
                             let base_angle = match layout.layout_type {
                                 TreeLayoutType::Circular => {
                                     compute_circular_tip_angle_screen(layout, node, &to_screen)
@@ -371,10 +386,13 @@ pub fn build_tree_scene(
                             let anchor_pos = p + dir * offset;
                             let (rotation, align) = readable_rotation(base_angle);
                             let text_size = approx_text_size(&text, painter.tip_label_font_size);
-                            let hit_rect = rotated_text_bounds(anchor_pos, text_size, rotation, align);
+                            let hit_rect =
+                                rotated_text_bounds(anchor_pos, text_size, rotation, align);
                             if selected_tips.contains(&node.id) {
                                 primitives.push(ScenePrimitive::FillPolygon {
-                                    points: rotated_expanded_corners(anchor_pos, text_size, rotation, align, 2.0),
+                                    points: rotated_expanded_corners(
+                                        anchor_pos, text_size, rotation, align, 2.0,
+                                    ),
                                     color: painter.tip_selection_color,
                                 });
                             }
@@ -543,7 +561,11 @@ where
     F: Fn((f32, f32)) -> Pos2,
 {
     if let Some(parent_id) = node.parent {
-        if let Some(branch) = layout.continuous_branches.iter().find(|b| b.child == node.id) {
+        if let Some(branch) = layout
+            .continuous_branches
+            .iter()
+            .find(|b| b.child == node.id)
+        {
             if branch.points.len() >= 2 {
                 let child = to_screen(branch.points[0]);
                 let shoulder = to_screen(branch.points[1]);

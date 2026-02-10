@@ -279,16 +279,7 @@ fn render_primitive(
                 return;
             };
             render_text(
-                pixmap,
-                font,
-                text,
-                *anchor,
-                *angle,
-                *align,
-                *size,
-                *color,
-                ppp,
-                width_px,
+                pixmap, font, text, *anchor, *angle, *align, *size, *color, ppp, width_px,
             );
         }
     }
