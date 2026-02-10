@@ -41,8 +41,8 @@ struct TipLabelInfo {
 pub struct TipLabelHit {
     pub node_id: NodeId,
     pub rect: egui::Rect,
-    pub rotation_angle: f32,  // 旋转角度
-    pub anchor: egui::Align2, // 锚点类型
+    pub rotation_angle: f32,    // 旋转角度
+    pub anchor: egui::Align2,   // 锚点类型
     pub anchor_pos: egui::Pos2, // 锚点位置（旋转中心）
     pub text_size: egui::Vec2,  // 原始文本尺寸
 }
@@ -155,6 +155,9 @@ pub struct TreePainter {
     pub show_tip_shapes: bool,
     pub show_node_shapes: bool,
     pub show_node_bars: bool,
+    pub node_bar_field: Option<String>,
+    pub node_bar_color: Color32,
+    pub node_bar_thickness: f32,
     pub align_tip_labels: bool,
     pub tip_label_display: TipLabelDisplay,
     pub tip_label_font_family: TipLabelFontFamily,
@@ -188,6 +191,9 @@ impl Default for TreePainter {
             show_tip_shapes: false,
             show_node_shapes: false,
             show_node_bars: false,
+            node_bar_field: None,
+            node_bar_color: Color32::from_rgba_unmultiplied(96, 186, 255, 100),
+            node_bar_thickness: 10.0,
             align_tip_labels: false,
             tip_label_display: TipLabelDisplay::Labels,
             tip_label_font_family: TipLabelFontFamily::Proportional,
@@ -291,7 +297,13 @@ impl TreePainter {
                     let center_x = inner.left() + inner.width() * 0.5;
                     let center_y = inner.top() + inner.height() * 0.5;
 
-                    (layout_center, layout_radius, available_radius, center_x, center_y)
+                    (
+                        layout_center,
+                        layout_radius,
+                        available_radius,
+                        center_x,
+                        center_y,
+                    )
                 }
                 _ => {
                     // For non-circular layouts, these values won't be used
@@ -337,6 +349,30 @@ impl TreePainter {
 
     pub fn set_branch_color(&mut self, node_id: NodeId, color: Color32) {
         self.branch_color_overrides.insert(node_id, color);
+    }
+
+    pub fn set_node_bar_field(&mut self, field: Option<String>) {
+        self.node_bar_field = field;
+    }
+
+    pub fn node_bar_field(&self) -> Option<&str> {
+        self.node_bar_field.as_deref()
+    }
+
+    pub fn set_node_bar_color(&mut self, color: Color32) {
+        self.node_bar_color = color;
+    }
+
+    pub fn node_bar_color(&self) -> Color32 {
+        self.node_bar_color
+    }
+
+    pub fn set_node_bar_thickness(&mut self, thickness: f32) {
+        self.node_bar_thickness = thickness.max(0.5);
+    }
+
+    pub fn node_bar_thickness(&self) -> f32 {
+        self.node_bar_thickness
     }
 
     pub fn branch_color_override(&self, node_id: NodeId) -> Option<Color32> {
@@ -979,12 +1015,25 @@ impl TreePainter {
                         let override_color =
                             self.branch_color_overrides.get(&branch.child).copied();
                         let is_selected = selected_nodes.contains(&branch.child);
-                        self.draw_branch(painter, screen_points, override_color, is_selected, selection_mode);
+                        self.draw_branch(
+                            painter,
+                            screen_points,
+                            override_color,
+                            is_selected,
+                            selection_mode,
+                        );
                     }
                 } else {
                     // 回退到分段绘制（向后兼容）
                     for arc_segment in &layout.arc_segments {
-                        self.draw_arc(painter, arc_segment, &to_screen, inner, selected_nodes, selection_mode);
+                        self.draw_arc(
+                            painter,
+                            arc_segment,
+                            &to_screen,
+                            inner,
+                            selected_nodes,
+                            selection_mode,
+                        );
                     }
 
                     for segment in &layout.rect_segments {
@@ -1042,6 +1091,12 @@ impl TreePainter {
                         selection_mode,
                     );
                 }
+            }
+        }
+
+        if self.show_node_bars {
+            if let Some(field) = self.node_bar_field.as_deref() {
+                self.paint_node_bars(painter, tree, layout, &to_screen, field);
             }
         }
 
@@ -1300,6 +1355,63 @@ impl TreePainter {
         tip_label_hits
     }
 
+    fn paint_node_bars<F>(
+        &self,
+        painter: &egui::Painter,
+        tree: &Tree,
+        layout: &TreeLayout,
+        to_screen: &F,
+        field: &str,
+    ) where
+        F: Fn((f32, f32)) -> egui::Pos2,
+    {
+        use crate::tree::layout::TreeLayoutType;
+
+        match layout.layout_type {
+            TreeLayoutType::Rectangular
+            | TreeLayoutType::Phylogram
+            | TreeLayoutType::Slanted
+            | TreeLayoutType::Daylight => {
+                for node in &tree.nodes {
+                    let Some((mut min, mut max)) = node.numeric_range_attribute(field) else {
+                        continue;
+                    };
+
+                    if !min.is_finite() || !max.is_finite() {
+                        continue;
+                    }
+
+                    if min > max {
+                        std::mem::swap(&mut min, &mut max);
+                    }
+
+                    let y_world = layout.positions[node.id].1;
+                    let start = to_screen((min as f32, y_world));
+                    let end = to_screen((max as f32, y_world));
+
+                    let mut left = start.x.min(end.x);
+                    let mut right = start.x.max(end.x);
+
+                    if (right - left).abs() < 0.5 {
+                        let center = (left + right) * 0.5;
+                        left = center - 0.5;
+                        right = center + 0.5;
+                    }
+
+                    let y_center = (start.y + end.y) * 0.5;
+                    let half = self.node_bar_thickness.max(0.5) * 0.5;
+                    let rect = egui::Rect::from_min_max(
+                        egui::pos2(left, y_center - half),
+                        egui::pos2(right, y_center + half),
+                    );
+
+                    painter.rect_filled(rect, 2.0, self.node_bar_color);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn draw_branch(
         &self,
         painter: &egui::Painter,
@@ -1312,10 +1424,11 @@ impl TreePainter {
         let base_color = override_color.unwrap_or(self.branch_stroke.color);
 
         // Only highlight branches if not in Taxa mode
-        let should_highlight = is_selected && !matches!(
-            selection_mode,
-            Some(crate::tree::viewer::SelectionMode::Taxa)
-        );
+        let should_highlight = is_selected
+            && !matches!(
+                selection_mode,
+                Some(crate::tree::viewer::SelectionMode::Taxa)
+            );
 
         if should_highlight {
             let highlight_width = self.branch_highlight_stroke.width.max(base_width * 3.0);
@@ -1472,10 +1585,11 @@ impl TreePainter {
 
         // 绘制圆弧
         // Only highlight branches if not in Taxa mode
-        let should_highlight = is_selected && !matches!(
-            selection_mode,
-            Some(crate::tree::viewer::SelectionMode::Taxa)
-        );
+        let should_highlight = is_selected
+            && !matches!(
+                selection_mode,
+                Some(crate::tree::viewer::SelectionMode::Taxa)
+            );
 
         if should_highlight {
             let highlight_width = self

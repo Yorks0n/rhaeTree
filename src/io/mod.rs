@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
-use phylotree::tree::Tree as PhyloTree;
+use phylotree::tree::{NewickFormat, Tree as PhyloTree};
 
 use crate::tree::{Tree, TreeBundle, TreeFileFormat};
 
@@ -212,7 +212,9 @@ fn parse_nexus(raw: &str) -> Result<Vec<Tree>> {
 fn build_tree(index: usize, label: Option<String>, newick: String) -> Result<Tree> {
     let phylo = PhyloTree::from_newick(&newick)
         .map_err(|err| anyhow!("failed to parse newick tree: {err}"))?;
-    let canonical_newick = phylo.to_newick().unwrap_or_else(|_| newick.clone());
+    let canonical_newick = phylo
+        .to_formatted_newick(NewickFormat::NoComments)
+        .unwrap_or_else(|_| newick.clone());
 
     Ok(Tree::new(index, label, canonical_newick, phylo))
 }
@@ -248,7 +250,7 @@ fn parse_nexus_tree_line(line: &str) -> Result<(Option<String>, String)> {
                 cleaned_label
                     .trim_matches('"')
                     .trim_matches('\'')
-                    .to_owned()
+                    .to_owned(),
             )
         }
     };
@@ -268,46 +270,13 @@ fn parse_nexus_tree_line(line: &str) -> Result<(Option<String>, String)> {
         }
     }
 
-    // Handle branch length annotations in the Newick string
-    let newick = process_newick_annotations(payload);
-    let newick = normalise_newick(&newick);
+    // Normalise to ensure we have a trailing semicolon, but preserve annotations for downstream parsing
+    let newick = normalise_newick(payload);
 
     Ok((label, newick))
 }
 
 // Helper function to process annotations within the Newick string
-fn process_newick_annotations(newick: &str) -> String {
-    let mut result = String::new();
-    let mut in_annotation = false;
-    let mut depth = 0;
-
-    for ch in newick.chars() {
-        match ch {
-            '[' if !in_annotation => {
-                in_annotation = true;
-                depth = 1;
-            },
-            '[' if in_annotation => {
-                depth += 1;
-            },
-            ']' if in_annotation => {
-                depth -= 1;
-                if depth == 0 {
-                    in_annotation = false;
-                }
-            },
-            _ if !in_annotation => {
-                result.push(ch);
-            },
-            _ => {
-                // Skip annotation content
-            }
-        }
-    }
-
-    result
-}
-
 fn normalise_newick(raw: &str) -> String {
     let mut cleaned = raw.trim().trim_end_matches(';').trim().to_owned();
     cleaned.push(';');
@@ -365,6 +334,36 @@ END;";
         assert_eq!(trees[0].label.as_deref(), Some("tree1"));
         // Annotations should be stripped from the newick string
         assert!(!trees[0].newick.contains("[&"));
+    }
+
+    #[test]
+    fn parses_nexus_with_hpd_annotations() {
+        let input = "#NEXUS
+BEGIN TREES;
+    UTREE 1 = (((Sly: 1.108043, (Mtr: 1.025109, (Ppr: 0.931515, Ath: 0.931515) [&95%HPD={0.884857, 0.976439}]: 0.093594) [&95%HPD={1.00855, 1.04577}]: 0.082934) [&95%HPD={1.08281, 1.1334}]: 0.084596, (Atr: 0.501430, ((Bvu: 0.393534, (Sol: 0.277897, (Cqu_subA: 0.074266, Cqu_subB: 0.074266) [&95%HPD={0.0514245, 0.0989838}]: 0.203632) [&95%HPD={0.217687, 0.342218}]: 0.115637) [&95%HPD={0.32271, 0.466057}]: 0.029666, (Ham: 0.335063, ((Sgl_subA: 0.011259, Sgl_subB: 0.011259) [&95%HPD={0.0076616, 0.0151649}]: 0.243167, (Sbi_subA: 0.060486, Sbi_subB: 0.060486) [&95%HPD={0.0417489, 0.0801152}]: 0.193939) [&95%HPD={0.19932, 0.311098}]: 0.080638) [&95%HPD={0.27219, 0.400269}]: 0.088137) [&95%HPD={0.349973, 0.498591}]: 0.078230) [&95%HPD={0.417616, 0.590171}]: 0.691209) [&95%HPD={1.17014, 1.20772}]: 0.343069, Osa: 1.535707) [&95%HPD={1.42368, 1.64135}];
+END;";
+
+        let trees = parse_nexus(input).unwrap();
+        assert_eq!(trees.len(), 1);
+        let tree = &trees[0];
+
+        assert!(tree
+            .node_numeric_attribute_keys()
+            .contains(&"95%HPD".to_string()));
+
+        let ranges: Vec<(f64, f64)> = tree
+            .nodes
+            .iter()
+            .filter_map(|node| node.numeric_range_attribute("95%HPD"))
+            .collect();
+
+        assert!(!ranges.is_empty());
+
+        let has_expected_range = ranges
+            .iter()
+            .any(|(min, max)| (min - 1.42368).abs() < 1e-5 && (max - 1.64135).abs() < 1e-5);
+
+        assert!(has_expected_range);
     }
 
     #[test]

@@ -37,6 +37,13 @@ pub struct FigTreeGui {
     highlight_picker_origin: Option<egui::Pos2>,
     highlight_picker_popup_open: bool,
     highlight_picker_popup_rect: Option<egui::Rect>,
+    node_bar_picker_open: bool,
+    node_bar_picker_hex_input: String,
+    node_bar_picker_mode: ColorValueMode,
+    node_bar_picker_color: Color32,
+    node_bar_picker_origin: Option<egui::Pos2>,
+    node_bar_picker_popup_open: bool,
+    node_bar_picker_popup_rect: Option<egui::Rect>,
     filter_text: String,
     filter_mode: FilterMode,
     root_tree_enabled: bool,
@@ -221,6 +228,13 @@ impl FigTreeGui {
             highlight_picker_origin: None,
             highlight_picker_popup_open: false,
             highlight_picker_popup_rect: None,
+            node_bar_picker_open: false,
+            node_bar_picker_hex_input: String::new(),
+            node_bar_picker_mode: ColorValueMode::Hex,
+            node_bar_picker_color: Color32::from_rgba_unmultiplied(96, 186, 255, 100),
+            node_bar_picker_origin: None,
+            node_bar_picker_popup_open: false,
+            node_bar_picker_popup_rect: None,
             filter_text: String::new(),
             filter_mode: FilterMode::Contains,
             root_tree_enabled: false,
@@ -248,6 +262,7 @@ impl FigTreeGui {
         }
 
         app.color_picker_color = app.tree_painter.highlight_color;
+        app.node_bar_picker_color = app.tree_painter.node_bar_color();
 
         app
     }
@@ -699,7 +714,9 @@ impl FigTreeGui {
                 };
 
                 // Use the same coordinate transformation as rendering to ensure consistency
-                let to_screen = self.tree_painter.create_to_screen_transform(&tree, &layout, inner);
+                let to_screen = self
+                    .tree_painter
+                    .create_to_screen_transform(&tree, &layout, inner);
 
                 fn distance_to_segment(point: egui::Pos2, seg: (egui::Pos2, egui::Pos2)) -> f32 {
                     let ap = point - seg.0;
@@ -733,8 +750,6 @@ impl FigTreeGui {
                 // Handle click interactions after painting
                 if response.clicked() {
                     if let Some(pointer_pos) = response.interact_pointer_pos() {
-                        use std::cmp::Ordering;
-
                         let mut handled = false;
                         let mode = self.tree_viewer.selection_mode();
 
@@ -1148,14 +1163,16 @@ impl eframe::App for FigTreeGui {
                             }
 
                             // Annotate button
-                            let has_single_tip_selected = self.tree_viewer.selected_tips().len() == 1;
+                            let has_single_tip_selected =
+                                self.tree_viewer.selected_tips().len() == 1;
                             let annotate_response = ui.add_enabled(
                                 has_single_tip_selected,
                                 egui::Button::new("📝 Annotate"),
                             );
                             if annotate_response.clicked() {
                                 // Open annotation dialog
-                                if let Some(&tip_id) = self.tree_viewer.selected_tips().iter().next()
+                                if let Some(&tip_id) =
+                                    self.tree_viewer.selected_tips().iter().next()
                                 {
                                     if let Some(tree) = self.tree_viewer.current_tree() {
                                         if let Some(node) = tree.nodes.get(tip_id) {
@@ -1616,6 +1633,192 @@ impl eframe::App for FigTreeGui {
             self.highlight_picker_popup_rect = None;
         }
 
+        // Node bar color picker window
+        if self.node_bar_picker_open {
+            let mut open = self.node_bar_picker_open;
+            let mut color = self.node_bar_picker_color;
+            let mut window = egui::Window::new("")
+                .resizable(false)
+                .collapsible(false)
+                .title_bar(false)
+                .default_width(110.0);
+
+            if let Some(anchor) = self.node_bar_picker_origin {
+                window = window.default_pos(anchor + egui::vec2(12.0, 0.0));
+            }
+
+            let mut request_popup_open = false;
+            let mut window_rect: Option<egui::Rect> = None;
+
+            let window_output = window.open(&mut open).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let toggle_label = match self.node_bar_picker_mode {
+                        ColorValueMode::Hex => "Show RGB",
+                        ColorValueMode::Rgb => "Show HEX",
+                    };
+                    if ui.button(toggle_label).clicked() {
+                        self.node_bar_picker_mode = match self.node_bar_picker_mode {
+                            ColorValueMode::Hex => ColorValueMode::Rgb,
+                            ColorValueMode::Rgb => ColorValueMode::Hex,
+                        };
+                        if matches!(self.node_bar_picker_mode, ColorValueMode::Hex) {
+                            self.node_bar_picker_hex_input =
+                                format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+                        }
+                    }
+
+                    match self.node_bar_picker_mode {
+                        ColorValueMode::Hex => {
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut self.node_bar_picker_hex_input)
+                                    .desired_width(60.0),
+                            );
+                            if response.changed() {
+                                if let Some(parsed) =
+                                    parse_hex_color(&self.node_bar_picker_hex_input)
+                                {
+                                    color = parsed;
+                                    self.node_bar_picker_hex_input = format!(
+                                        "#{:02X}{:02X}{:02X}",
+                                        color.r(),
+                                        color.g(),
+                                        color.b()
+                                    );
+                                }
+                            }
+                        }
+                        ColorValueMode::Rgb => {
+                            ui.label(format!("RGB: {}, {}, {}", color.r(), color.g(), color.b()));
+                        }
+                    }
+                });
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label(format!("Alpha: {:.0}%", color.a() as f32 / 255.0 * 100.0));
+                    let mut alpha = color.a() as f32;
+                    if ui
+                        .add(egui::Slider::new(&mut alpha, 0.0..=255.0).show_value(false))
+                        .changed()
+                    {
+                        let alpha_u8 = alpha.clamp(0.0, 255.0).round() as u8;
+                        color = Color32::from_rgba_unmultiplied(
+                            color.r(),
+                            color.g(),
+                            color.b(),
+                            alpha_u8,
+                        );
+                    }
+                });
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("Preview:");
+                    let preview = egui::Button::new(" ")
+                        .fill(color)
+                        .min_size(egui::vec2(28.0, 28.0));
+                    if ui.add(preview).clicked() {
+                        request_popup_open = true;
+                    }
+                });
+
+                ui.separator();
+                if ui.button("Close").clicked() {
+                    self.node_bar_picker_open = false;
+                    self.node_bar_picker_popup_open = false;
+                }
+            });
+
+            if let Some(output) = window_output {
+                window_rect = Some(output.response.rect);
+            }
+
+            if open {
+                self.node_bar_picker_popup_rect = window_rect;
+                if request_popup_open {
+                    self.node_bar_picker_popup_open = true;
+                }
+            } else {
+                self.node_bar_picker_popup_open = false;
+                self.node_bar_picker_popup_rect = None;
+            }
+
+            if self.node_bar_picker_popup_open {
+                if let Some(parent_rect) = self.node_bar_picker_popup_rect {
+                    let mut popup_color = color;
+                    let popup_pos = parent_rect.right_top() + egui::vec2(12.0, 0.0);
+                    egui::Area::new("node_bar_picker_popup".into())
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(popup_pos)
+                        .show(ctx, |ui| {
+                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                ui.set_width(140.0);
+                                let mut popup_changed = false;
+                                ui.scope(|ui| {
+                                    let mut style = (**ui.style()).clone();
+                                    style.spacing.slider_width *= 0.6;
+                                    style.spacing.item_spacing *= 0.8;
+                                    ui.set_style(style);
+
+                                    if color_picker::color_picker_color32(
+                                        ui,
+                                        &mut popup_color,
+                                        color_picker::Alpha::OnlyBlend,
+                                    ) {
+                                        popup_changed = true;
+                                    }
+                                });
+
+                                ui.separator();
+                                if ui.button("Close").clicked() {
+                                    self.node_bar_picker_popup_open = false;
+                                }
+
+                                if popup_changed {
+                                    self.node_bar_picker_hex_input = format!(
+                                        "#{:02X}{:02X}{:02X}",
+                                        popup_color.r(),
+                                        popup_color.g(),
+                                        popup_color.b()
+                                    );
+                                }
+                            });
+                        });
+
+                    if self.node_bar_picker_popup_open
+                        && (popup_color.r() != color.r()
+                            || popup_color.g() != color.g()
+                            || popup_color.b() != color.b()
+                            || popup_color.a() != color.a())
+                    {
+                        color = popup_color;
+                        self.node_bar_picker_hex_input =
+                            format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+                    }
+                } else {
+                    self.node_bar_picker_popup_open = false;
+                }
+            }
+
+            self.node_bar_picker_color = color;
+            self.tree_painter.set_node_bar_color(color);
+            ctx.request_repaint();
+            self.node_bar_picker_open = open && self.node_bar_picker_open;
+            if self.node_bar_picker_open {
+                self.node_bar_picker_hex_input =
+                    format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+            } else {
+                self.node_bar_picker_origin = None;
+                self.node_bar_picker_popup_open = false;
+                self.node_bar_picker_popup_rect = None;
+            }
+        } else {
+            self.node_bar_picker_popup_open = false;
+            self.node_bar_picker_popup_rect = None;
+        }
+
         // Annotate dialog
         if self.annotate_dialog_open {
             let mut open = self.annotate_dialog_open;
@@ -1684,7 +1887,8 @@ impl eframe::App for FigTreeGui {
                                             }
                                             // Remember the last saved field choice
                                             self.last_saved_annotate_field = self.annotate_field;
-                                            self.status = format!("Updated {} for tip {}",
+                                            self.status = format!(
+                                                "Updated {} for tip {}",
                                                 match self.annotate_field {
                                                     AnnotateField::Names => "name",
                                                     AnnotateField::Labels => "label",
@@ -2132,7 +2336,113 @@ impl eframe::App for FigTreeGui {
                     toggle
                 });
 
-                node_bars_state.show_body_indented(&node_bars_header_response.response, ui, |_ui| {});
+                node_bars_state.show_body_indented(&node_bars_header_response.response, ui, |ui| {
+                    let maybe_tree = self.tree_viewer.current_tree();
+
+                    let mut available_fields: Vec<String> = maybe_tree
+                        .map(|tree| {
+                            let mut fields = tree.node_numeric_range_keys();
+                            if fields.is_empty() {
+                                fields = tree.node_numeric_attribute_keys();
+                            }
+                            fields
+                        })
+                        .unwrap_or_default();
+                    available_fields.sort();
+                    available_fields.dedup();
+
+                    if maybe_tree.is_none() {
+                        ui.label("Load a tree to configure node bars.");
+                        return;
+                    }
+
+                    if available_fields.is_empty() {
+                        ui.label("No numeric annotations found in this tree.");
+                    } else {
+                        let mut selection = self
+                            .tree_painter
+                            .node_bar_field()
+                            .map(|field| field.to_string());
+                        let previous = selection.clone();
+                        let selected_label = selection
+                            .as_deref()
+                            .unwrap_or("Select field");
+
+                        egui::ComboBox::from_id_salt("node_bar_field_combo")
+                            .selected_text(selected_label)
+                            .width(180.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut selection, None, "None");
+                                for field in &available_fields {
+                                    ui.selectable_value(
+                                        &mut selection,
+                                        Some(field.clone()),
+                                        field,
+                                    );
+                                }
+                            });
+
+                        if selection != previous {
+                            self.tree_painter.set_node_bar_field(selection);
+                        }
+
+                        ui.horizontal(|ui| {
+                            ui.label("Bar thickness");
+                            let mut thickness = self.tree_painter.node_bar_thickness();
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut thickness)
+                                        .range(1.0..=60.0)
+                                        .speed(0.25)
+                                        .suffix(" px"),
+                                )
+                                .changed()
+                            {
+                                self.tree_painter.set_node_bar_thickness(thickness);
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Bar color");
+                            let color = self.tree_painter.node_bar_color();
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::vec2(40.0, 18.0),
+                                egui::Sense::click(),
+                            );
+
+                            if ui.is_rect_visible(rect) {
+                                ui.painter().rect_filled(rect, 4.0, color);
+                                let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    4.0,
+                                    stroke,
+                                    egui::StrokeKind::Middle,
+                                );
+                            }
+
+                            if response.clicked() {
+                                let initial = self.tree_painter.node_bar_color();
+                                self.node_bar_picker_color = initial;
+                                self.node_bar_picker_hex_input = format!(
+                                    "#{:02X}{:02X}{:02X}",
+                                    initial.r(),
+                                    initial.g(),
+                                    initial.b()
+                                );
+                                self.node_bar_picker_mode = ColorValueMode::Hex;
+                                self.node_bar_picker_open = true;
+                                self.node_bar_picker_origin = Some(response.rect.right_top());
+                                self.node_bar_picker_popup_open = false;
+                                self.node_bar_picker_popup_rect = None;
+                            }
+                        });
+
+                        if !self.tree_painter.show_node_bars {
+                            ui.label("Enable \"Show Node Bars\" to display bars on the tree.");
+                        }
+                    }
+                });
                 self.panel_states.node_bars_expanded = node_bars_state.is_open();
 
                 // Trees Panel
