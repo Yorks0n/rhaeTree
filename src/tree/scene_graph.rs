@@ -312,26 +312,39 @@ pub fn build_tree_scene(
     } else {
         HashMap::new()
     };
-    let circular_tip_align_offsets = if painter.align_tip_labels
+    let circular_tip_align_data = if painter.align_tip_labels
         && matches!(layout.layout_type, TreeLayoutType::Circular)
     {
-        let center = to_local(to_screen((layout.width * 0.5, layout.height * 0.5)));
+        let center_world = layout
+            .arc_segments
+            .first()
+            .map(|arc| arc.center)
+            .or_else(|| tree.root.map(|root| layout.positions[root]))
+            .unwrap_or((layout.width * 0.5, layout.height * 0.5));
+        let center = to_local(to_screen(center_world));
         let mut radii = Vec::new();
         let mut max_radius = 0.0f32;
         for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
             let p = to_local(to_screen(layout.positions[node.id]));
-            let r = (p - center).length();
+            let v = p - center;
+            let r = v.length();
             max_radius = max_radius.max(r);
-            radii.push((node.id, r));
+            let dir = if r > 1e-6 {
+                v / r
+            } else {
+                let angle = compute_circular_tip_angle_screen(tree, layout, node, &to_screen);
+                Vec2::new(angle.cos(), angle.sin())
+            };
+            radii.push((node.id, r, dir));
         }
-        let mut offsets = HashMap::new();
-        for (node_id, r) in radii {
+        let mut data = HashMap::new();
+        for (node_id, r, dir) in radii {
             let ext = (max_radius - r).max(0.0);
             if ext > 0.5 {
-                offsets.insert(node_id, ext);
+                data.insert(node_id, (ext, dir));
             }
         }
-        offsets
+        data
     } else {
         HashMap::new()
     };
@@ -360,15 +373,13 @@ pub fn build_tree_scene(
     }
     if painter.align_tip_labels
         && matches!(layout.layout_type, TreeLayoutType::Circular)
-        && !circular_tip_align_offsets.is_empty()
+        && !circular_tip_align_data.is_empty()
     {
         for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
-            let Some(&ext) = circular_tip_align_offsets.get(&node.id) else {
+            let Some(&(ext, dir)) = circular_tip_align_data.get(&node.id) else {
                 continue;
             };
             let start = to_local(to_screen(layout.positions[node.id]));
-            let angle = compute_circular_tip_angle_screen(tree, layout, node, &to_screen);
-            let dir = Vec2::new(angle.cos(), angle.sin());
             let end = start + dir * ext;
             primitives.push(ScenePrimitive::StrokeLine {
                 from: start,
@@ -447,11 +458,21 @@ pub fn build_tree_scene(
                             let extra_offset = if painter.align_tip_labels
                                 && matches!(layout.layout_type, TreeLayoutType::Circular)
                             {
-                                *circular_tip_align_offsets.get(&node.id).unwrap_or(&0.0)
+                                circular_tip_align_data
+                                    .get(&node.id)
+                                    .map(|(ext, _)| *ext)
+                                    .unwrap_or(0.0)
                             } else {
                                 0.0
                             };
-                            let dir = Vec2::new(base_angle.cos(), base_angle.sin());
+                            let dir = if matches!(layout.layout_type, TreeLayoutType::Circular) {
+                                circular_tip_align_data
+                                    .get(&node.id)
+                                    .map(|(_, d)| *d)
+                                    .unwrap_or_else(|| Vec2::new(base_angle.cos(), base_angle.sin()))
+                            } else {
+                                Vec2::new(base_angle.cos(), base_angle.sin())
+                            };
                             let anchor_pos = p + dir * (offset + extra_offset);
                             let (rotation, align) = readable_rotation(base_angle);
                             let text_size = approx_text_size(&text, painter.tip_label_font_size);

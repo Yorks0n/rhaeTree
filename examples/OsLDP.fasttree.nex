@@ -1,0 +1,29 @@
+#NEXUS
+begin taxa;
+	dimensions ntax=17;
+	taxlabels
+	HORVU4Hr1G063430
+	HORVU4Hr1G063470
+	HORVU4Hr1G063480
+	HORVU5Hr1G082760
+	HORVU5Hr1G084430
+	Os03g0245500[&!color=#e8291c]
+	Os09g0535400[&!color=#e8291c]
+	Os10g0155100[&!color=#e8291c]
+	SETIT_032038mg
+	SETIT_036389mg
+	SETIT_036701mg
+	'Sobic.001G264801'
+	'Sobic.001G438200'
+	'Sobic.002G277700'
+	Zm00001d021315
+	Zm00001d030338
+	Zm00001d047932
+;
+end;
+
+begin trees;
+	tree tree_1 = [&R] ('Sobic.001G264801':0.044563,Zm00001d030338:0.046232,(SETIT_036389mg:0.080497,(HORVU5Hr1G084430:0.210866,(Os10g0155100:0.236732,((HORVU5Hr1G082760:0.399042,(Os09g0535400:0.198112,(SETIT_032038mg:0.075761,('Sobic.002G277700':0.033715,Zm00001d021315:0.060208)[&label="[&label=0.98]"]:0.05512)[&label="[&label=1.0]"]:0.197729)[&label="[&label=0.569]"]:0.085644)[&label="[&label=1.0]"]:0.881143,((HORVU4Hr1G063480:0.110788,(HORVU4Hr1G063470:0.01733,HORVU4Hr1G063430:0.010809)[&label="[&label=1.0]"]:0.086268)[&label="[&label=0.887]"]:0.042098,(Os03g0245500:0.146602,(SETIT_036701mg:0.07629,(Zm00001d047932:0.027957,'Sobic.001G438200':0.021815)[&label="[&label=0.928]"]:0.039313)[&label="[&label=0.97]"]:0.078416)[&label="[&label=0.929]"]:0.062704)[&label="[&label=0.998]"]:0.234443)[&label="[&label=0.909]"]:0.10137)[&label="[&label=0.511]"]:0.042641)[&label="[&label=0.994]"]:0.102238)[&label="[&label=0.91]"]:0.043438);
+end;
+
+

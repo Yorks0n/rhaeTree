@@ -20,6 +20,17 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
 
     // 转换矩形坐标到极坐标
     let max_radius = max_x.max(1e-6);
+    // Ensure zero-length tip branches still have a tiny radial separation.
+    let tip_eps = (max_radius * 1e-4).max(1e-6);
+    let mut effective_radii: Vec<f32> = positions.iter().map(|(x, _)| *x).collect();
+    for (parent, child) in &edges {
+        if tree.nodes[*child].is_leaf() {
+            let parent_r = effective_radii[*parent];
+            if effective_radii[*child] <= parent_r {
+                effective_radii[*child] = parent_r + tip_eps;
+            }
+        }
+    }
     let mut polar_positions = vec![(0.0f32, 0.0f32); positions.len()];
 
     // 首先计算每个节点的角度（叶节点均匀分布，内部节点根据子节点角度计算）
@@ -36,8 +47,8 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
 
     // 然后计算极坐标位置
     // 使用原始的分支长度比例，而不是归一化到[0,1]范围
-    for (index, &(x, _)) in positions.iter().enumerate() {
-        let radius = x; // 直接使用x坐标作为半径，保持分支长度比例
+    for (index, _pos) in positions.iter().enumerate() {
+        let radius = effective_radii[index];
         let angle = node_angles[index];
         polar_positions[index] = (radius * angle.cos(), radius * angle.sin());
     }
@@ -91,16 +102,13 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
     let mut arc_segments = Vec::new();
 
     for (parent, child) in &edges {
-        let parent_pos = positions[*parent];
-        let child_pos = positions[*child];
-
         // 使用预先计算的角度
         let parent_angle = node_angles[*parent];
         let child_angle = node_angles[*child];
 
         // 计算极坐标下的位置 - 使用原始半径，与polar_positions保持一致
-        let parent_radius = parent_pos.0;
-        let child_radius = child_pos.0;
+        let parent_radius = effective_radii[*parent];
+        let child_radius = effective_radii[*child];
 
         let mut parent_polar = (
             parent_radius * parent_angle.cos(),
