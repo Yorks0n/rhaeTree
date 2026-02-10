@@ -144,36 +144,36 @@ pub fn build_tree_scene(
     let branch_color = painter.branch_stroke.color;
     let selected_branch_color = painter.tip_selection_color;
     let branch_width = (painter.branch_stroke.width * stroke_scale).max(1.0);
+    let highlight_width = (painter.branch_highlight_stroke.width * stroke_scale).max(branch_width * 1.8);
 
     if matches!(layout.layout_type, TreeLayoutType::Circular) && !layout.arc_segments.is_empty() {
         for (parent, child) in &layout.edges {
             let is_selected = selected_nodes.contains(child)
                 && !matches!(selection_mode, Some(SelectionMode::Taxa));
-            let color = if is_selected {
-                selected_branch_color
-            } else {
-                painter
-                    .branch_color_override(*child)
-                    .unwrap_or(branch_color)
-            };
-            let width = if is_selected {
-                painter
-                    .branch_highlight_stroke
-                    .width
-                    .max(branch_width * 1.8)
-            } else {
-                branch_width
-            };
-            let style = StrokeStyle {
-                width,
-                color,
-                dash: None,
-            };
+            let base_color = painter
+                .branch_color_override(*child)
+                .unwrap_or(branch_color);
             if let Some(arc) = layout
                 .arc_segments
                 .iter()
                 .find(|a| a.child == *child && a.parent == *parent)
             {
+                if is_selected {
+                    primitives.push(ScenePrimitive::StrokeCircularBranch {
+                        child: to_local(to_screen(layout.positions[*child])),
+                        center: to_local(to_screen(arc.center)),
+                        radius: (to_local(to_screen((arc.center.0 + arc.radius, arc.center.1)))
+                            - to_local(to_screen(arc.center)))
+                        .length(),
+                        start_angle: arc.start_angle,
+                        end_angle: arc.end_angle,
+                        style: StrokeStyle {
+                            width: highlight_width,
+                            color: selected_branch_color,
+                            dash: None,
+                        },
+                    });
+                }
                 primitives.push(ScenePrimitive::StrokeCircularBranch {
                     child: to_local(to_screen(layout.positions[*child])),
                     center: to_local(to_screen(arc.center)),
@@ -182,13 +182,32 @@ pub fn build_tree_scene(
                     .length(),
                     start_angle: arc.start_angle,
                     end_angle: arc.end_angle,
-                    style,
+                    style: StrokeStyle {
+                        width: branch_width,
+                        color: base_color,
+                        dash: None,
+                    },
                 });
             } else {
+                if is_selected {
+                    primitives.push(ScenePrimitive::StrokeLine {
+                        from: to_local(to_screen(layout.positions[*parent])),
+                        to: to_local(to_screen(layout.positions[*child])),
+                        style: StrokeStyle {
+                            width: highlight_width,
+                            color: selected_branch_color,
+                            dash: None,
+                        },
+                    });
+                }
                 primitives.push(ScenePrimitive::StrokeLine {
                     from: to_local(to_screen(layout.positions[*parent])),
                     to: to_local(to_screen(layout.positions[*child])),
-                    style,
+                    style: StrokeStyle {
+                        width: branch_width,
+                        color: base_color,
+                        dash: None,
+                    },
                 });
             }
         }
@@ -196,31 +215,29 @@ pub fn build_tree_scene(
         for branch in &layout.continuous_branches {
             let is_selected = selected_nodes.contains(&branch.child)
                 && !matches!(selection_mode, Some(SelectionMode::Taxa));
-            let color = if is_selected {
-                selected_branch_color
-            } else {
-                painter
-                    .branch_color_override(branch.child)
-                    .unwrap_or(branch_color)
-            };
-            let width = if is_selected {
-                painter
-                    .branch_highlight_stroke
-                    .width
-                    .max(branch_width * 1.8)
-            } else {
-                branch_width
-            };
+            let base_color = painter
+                .branch_color_override(branch.child)
+                .unwrap_or(branch_color);
             let points: Vec<Pos2> = branch
                 .points
                 .iter()
                 .map(|&p| to_local(to_screen(p)))
                 .collect();
+            if is_selected {
+                primitives.push(ScenePrimitive::StrokePolyline {
+                    points: points.clone(),
+                    style: StrokeStyle {
+                        width: highlight_width,
+                        color: selected_branch_color,
+                        dash: None,
+                    },
+                });
+            }
             primitives.push(ScenePrimitive::StrokePolyline {
                 points,
                 style: StrokeStyle {
-                    width,
-                    color,
+                    width: branch_width,
+                    color: base_color,
                     dash: None,
                 },
             });
@@ -229,27 +246,26 @@ pub fn build_tree_scene(
         for (parent, child) in &layout.edges {
             let is_selected = selected_nodes.contains(child)
                 && !matches!(selection_mode, Some(SelectionMode::Taxa));
-            let color = if is_selected {
-                selected_branch_color
-            } else {
-                painter
-                    .branch_color_override(*child)
-                    .unwrap_or(branch_color)
-            };
-            let width = if is_selected {
-                painter
-                    .branch_highlight_stroke
-                    .width
-                    .max(branch_width * 1.8)
-            } else {
-                branch_width
-            };
+            let base_color = painter
+                .branch_color_override(*child)
+                .unwrap_or(branch_color);
+            if is_selected {
+                primitives.push(ScenePrimitive::StrokeLine {
+                    from: to_local(to_screen(layout.positions[*parent])),
+                    to: to_local(to_screen(layout.positions[*child])),
+                    style: StrokeStyle {
+                        width: highlight_width,
+                        color: selected_branch_color,
+                        dash: None,
+                    },
+                });
+            }
             primitives.push(ScenePrimitive::StrokeLine {
                 from: to_local(to_screen(layout.positions[*parent])),
                 to: to_local(to_screen(layout.positions[*child])),
                 style: StrokeStyle {
-                    width,
-                    color,
+                    width: branch_width,
+                    color: base_color,
                     dash: None,
                 },
             });
