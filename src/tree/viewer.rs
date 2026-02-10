@@ -21,7 +21,7 @@ pub enum NumberSearchType {
     EqualsOrLessThan,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SelectionMode {
     Clade,
     Nodes,

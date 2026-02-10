@@ -217,13 +217,6 @@ impl TreePainter {
         layout: &TreeLayout,
         inner: egui::Rect,
     ) -> impl Fn((f32, f32)) -> egui::Pos2 + '_ {
-        // Calculate tip extensions for align_tip_labels
-        let tip_extensions = if self.align_tip_labels {
-            self.calculate_tip_extensions(tree)
-        } else {
-            HashMap::new()
-        };
-
         // Calculate scaling factors
         let scale_x = if layout.width <= f32::EPSILON {
             inner.width().max(1.0)
@@ -243,13 +236,36 @@ impl TreePainter {
                 super::layout::TreeLayoutType::Circular
                 | super::layout::TreeLayoutType::Radial
                 | super::layout::TreeLayoutType::Daylight => {
-                    // 计算画布内切圆的最大可用半径，为标签留出固定空间
-                    let label_margin = if self.align_tip_labels && !tip_extensions.is_empty() {
-                        self.tip_label_font_size * 8.0 // 为延伸的标签留出屏幕空间
+                    // Reserve radial margin for visible tip labels to reduce clipping.
+                    // This is independent of align_tip_labels for circular/radial layouts.
+                    let label_margin = if self.show_tip_labels {
+                        let max_chars = tree
+                            .nodes
+                            .iter()
+                            .filter(|n| n.is_leaf())
+                            .filter_map(|n| self.tip_label_text(tree, n))
+                            .map(|s| s.chars().count())
+                            .max()
+                            .unwrap_or(0) as f32;
+                        let text_w = max_chars * self.tip_label_font_size * 0.56;
+                        let text_h = self.tip_label_font_size.max(8.0);
+                        let text_radius = text_w.max(text_h) * 0.5;
+                        let offset = if matches!(
+                            layout.layout_type,
+                            super::layout::TreeLayoutType::Circular
+                        ) {
+                            12.0
+                        } else {
+                            8.0
+                        };
+                        let max_margin = inner.width().min(inner.height()) * 0.30;
+                        (offset + text_radius).min(max_margin)
                     } else {
                         0.0
                     };
-                    let available_radius = inner.width().min(inner.height()) * 0.45 - label_margin;
+                    let base_radius = inner.width().min(inner.height()) * 0.5;
+                    let min_radius = inner.width().min(inner.height()) * 0.12;
+                    let available_radius = (base_radius - label_margin - 2.0).max(min_radius);
 
                     // 获取根节点位置作为圆的中心（进化树形状的真实中心）
                     let layout_center =
@@ -263,35 +279,17 @@ impl TreePainter {
                             (layout.width * 0.5, layout.height * 0.5)
                         };
 
-                    // 计算layout的实际半径（从根节点中心到所有节点的最大距离）
-                    let layout_radius = if self.align_tip_labels && !tip_extensions.is_empty() {
-                        // 找到所有tip到根节点的最大距离，加上extension
-                        let mut max_radius = 0.0f32;
-                        for node in &tree.nodes {
-                            if node.is_leaf() {
-                                let pos = layout.positions[node.id];
-                                let dx = pos.0 - layout_center.0;
-                                let dy = pos.1 - layout_center.1;
-                                let radius = (dx * dx + dy * dy).sqrt();
-                                max_radius = max_radius.max(radius);
-                            }
-                        }
-                        // 加上最大的extension（都在layout坐标系中）
-                        let max_extension =
-                            tip_extensions.values().fold(0.0f64, |a, &b| a.max(b)) as f32;
-                        (max_radius + max_extension).max(1e-6)
-                    } else {
-                        // 计算所有节点到根节点的最大欧几里得距离（精确值）
-                        let mut max_radius = 0.0f32;
-                        for node in &tree.nodes {
-                            let pos = layout.positions[node.id];
-                            let dx = pos.0 - layout_center.0;
-                            let dy = pos.1 - layout_center.1;
-                            let radius = (dx * dx + dy * dy).sqrt();
-                            max_radius = max_radius.max(radius);
-                        }
-                        max_radius.max(1e-6)
-                    };
+                    // Radius for circular/radial/daylight should be based on actual geometry,
+                    // not rectangular tip-extension logic.
+                    let mut max_radius = 0.0f32;
+                    for node in &tree.nodes {
+                        let pos = layout.positions[node.id];
+                        let dx = pos.0 - layout_center.0;
+                        let dy = pos.1 - layout_center.1;
+                        let radius = (dx * dx + dy * dy).sqrt();
+                        max_radius = max_radius.max(radius);
+                    }
+                    let layout_radius = max_radius.max(1e-6);
 
                     // 计算画布中心
                     let center_x = inner.left() + inner.width() * 0.5;
@@ -2829,7 +2827,7 @@ impl TreePainter {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TipLabelDisplay {
     Names,
     Labels,
@@ -2850,7 +2848,7 @@ impl TipLabelDisplay {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TipLabelNumberFormat {
     Decimal,
     Scientific,
@@ -2867,7 +2865,7 @@ impl TipLabelNumberFormat {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TipLabelFontFamily {
     Proportional,
     Monospace,

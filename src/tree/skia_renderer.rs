@@ -120,7 +120,7 @@ fn render_primitive(
     ppp: f32,
     text_font: Option<&Font>,
     width_px: u32,
-    height_px: u32,
+    _height_px: u32,
 ) {
     match primitive {
         ScenePrimitive::FillRect { rect, color } => {
@@ -289,7 +289,6 @@ fn render_primitive(
                 *color,
                 ppp,
                 width_px,
-                height_px,
             );
         }
     }
@@ -363,7 +362,6 @@ fn render_text(
     color: Color32,
     ppp: f32,
     width_px: u32,
-    height_px: u32,
 ) {
     if text.is_empty() {
         return;
@@ -432,22 +430,61 @@ fn render_text(
                     continue;
                 }
 
-                let local_x = gx + x as f32;
-                let local_y = gy + y as f32;
+                // Sample at pixel center for better rotation stability.
+                let local_x = gx + x as f32 + 0.5;
+                let local_y = gy + y as f32 + 0.5;
 
                 let dx = local_x - anchor_local.0;
                 let dy = local_y - anchor_local.1;
                 let world_x = ax + dx * cos_a - dy * sin_a;
                 let world_y = ay + dx * sin_a + dy * cos_a;
 
-                let ix = world_x.round() as i32;
-                let iy = world_y.round() as i32;
-                if ix < 0 || iy < 0 || ix >= width_px as i32 || iy >= height_px as i32 {
+                let src_a = (color.a() as f32 / 255.0) * cov;
+                if src_a <= 0.0 {
                     continue;
                 }
 
-                let src_a = (color.a() as f32 / 255.0) * cov;
-                blend_pixel_premultiplied(data, width_px as usize, ix as usize, iy as usize, color, src_a);
+                // Bilinear splat to avoid pinholes on rotated glyph strokes.
+                let x0 = world_x.floor();
+                let y0 = world_y.floor();
+                let fx = world_x - x0;
+                let fy = world_y - y0;
+
+                let x0i = x0 as i32;
+                let y0i = y0 as i32;
+
+                blend_pixel_premultiplied(
+                    data,
+                    width_px as usize,
+                    x0i,
+                    y0i,
+                    color,
+                    src_a * (1.0 - fx) * (1.0 - fy),
+                );
+                blend_pixel_premultiplied(
+                    data,
+                    width_px as usize,
+                    x0i + 1,
+                    y0i,
+                    color,
+                    src_a * fx * (1.0 - fy),
+                );
+                blend_pixel_premultiplied(
+                    data,
+                    width_px as usize,
+                    x0i,
+                    y0i + 1,
+                    color,
+                    src_a * (1.0 - fx) * fy,
+                );
+                blend_pixel_premultiplied(
+                    data,
+                    width_px as usize,
+                    x0i + 1,
+                    y0i + 1,
+                    color,
+                    src_a * fx * fy,
+                );
             }
         }
     }
@@ -456,12 +493,24 @@ fn render_text(
 fn blend_pixel_premultiplied(
     data: &mut [u8],
     width: usize,
-    x: usize,
-    y: usize,
+    x: i32,
+    y: i32,
     color: Color32,
     src_a: f32,
 ) {
-    let idx = (y * width + x) * 4;
+    if src_a <= 0.0 {
+        return;
+    }
+    if x < 0 || y < 0 {
+        return;
+    }
+    let xu = x as usize;
+    let yu = y as usize;
+    let height = data.len() / (width * 4);
+    if xu >= width || yu >= height {
+        return;
+    }
+    let idx = (yu * width + xu) * 4;
 
     let dst_r = data[idx] as f32 / 255.0;
     let dst_g = data[idx + 1] as f32 / 255.0;

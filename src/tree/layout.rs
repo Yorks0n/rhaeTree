@@ -9,7 +9,7 @@ mod radial;
 mod rectangular;
 mod slanted;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TreeLayoutType {
     Rectangular,
     Circular,
