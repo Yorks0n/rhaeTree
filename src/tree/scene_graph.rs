@@ -312,6 +312,29 @@ pub fn build_tree_scene(
     } else {
         HashMap::new()
     };
+    let circular_tip_align_offsets = if painter.align_tip_labels
+        && matches!(layout.layout_type, TreeLayoutType::Circular)
+    {
+        let center = to_local(to_screen((layout.width * 0.5, layout.height * 0.5)));
+        let mut radii = Vec::new();
+        let mut max_radius = 0.0f32;
+        for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
+            let p = to_local(to_screen(layout.positions[node.id]));
+            let r = (p - center).length();
+            max_radius = max_radius.max(r);
+            radii.push((node.id, r));
+        }
+        let mut offsets = HashMap::new();
+        for (node_id, r) in radii {
+            let ext = (max_radius - r).max(0.0);
+            if ext > 0.5 {
+                offsets.insert(node_id, ext);
+            }
+        }
+        offsets
+    } else {
+        HashMap::new()
+    };
     if painter.align_tip_labels && !tip_extensions.is_empty() {
         for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
             if let Some(&ext) = tip_extensions.get(&node.id) {
@@ -333,6 +356,29 @@ pub fn build_tree_scene(
                     },
                 });
             }
+        }
+    }
+    if painter.align_tip_labels
+        && matches!(layout.layout_type, TreeLayoutType::Circular)
+        && !circular_tip_align_offsets.is_empty()
+    {
+        for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
+            let Some(&ext) = circular_tip_align_offsets.get(&node.id) else {
+                continue;
+            };
+            let start = to_local(to_screen(layout.positions[node.id]));
+            let angle = compute_circular_tip_angle_screen(tree, layout, node, &to_screen);
+            let dir = Vec2::new(angle.cos(), angle.sin());
+            let end = start + dir * ext;
+            primitives.push(ScenePrimitive::StrokeLine {
+                from: start,
+                to: end,
+                style: StrokeStyle {
+                    width: 1.0,
+                    color: Color32::from_rgba_unmultiplied(120, 120, 120, 180),
+                    dash: Some((6.0, 4.0)),
+                },
+            });
         }
     }
 
@@ -389,17 +435,24 @@ pub fn build_tree_scene(
                         | TreeLayoutType::Daylight => {
                             let base_angle = match layout.layout_type {
                                 TreeLayoutType::Circular => {
-                                    compute_circular_tip_angle_screen(layout, node, &to_screen)
+                                    compute_circular_tip_angle_screen(tree, layout, node, &to_screen)
                                 }
-                                _ => compute_radial_tip_angle_screen(layout, node, &to_screen),
+                                _ => compute_radial_tip_angle_screen(tree, layout, node, &to_screen),
                             };
                             let offset = if matches!(layout.layout_type, TreeLayoutType::Circular) {
                                 12.0
                             } else {
                                 8.0
                             };
+                            let extra_offset = if painter.align_tip_labels
+                                && matches!(layout.layout_type, TreeLayoutType::Circular)
+                            {
+                                *circular_tip_align_offsets.get(&node.id).unwrap_or(&0.0)
+                            } else {
+                                0.0
+                            };
                             let dir = Vec2::new(base_angle.cos(), base_angle.sin());
-                            let anchor_pos = p + dir * offset;
+                            let anchor_pos = p + dir * (offset + extra_offset);
                             let (rotation, align) = readable_rotation(base_angle);
                             let text_size = approx_text_size(&text, painter.tip_label_font_size);
                             let hit_rect =
@@ -572,43 +625,158 @@ fn calculate_tip_extensions(tree: &Tree) -> HashMap<NodeId, f64> {
     extensions
 }
 
-fn compute_circular_tip_angle_screen<F>(layout: &TreeLayout, node: &TreeNode, to_screen: &F) -> f32
-where
-    F: Fn((f32, f32)) -> Pos2,
-{
-    if let Some(parent_id) = node.parent {
-        if let Some(branch) = layout
-            .continuous_branches
-            .iter()
-            .find(|b| b.child == node.id)
-        {
-            if branch.points.len() >= 2 {
-                let child = to_screen(branch.points[0]);
-                let shoulder = to_screen(branch.points[1]);
-                return (child.y - shoulder.y).atan2(child.x - shoulder.x);
-            }
-        }
-        let parent = to_screen(layout.positions[parent_id]);
-        let child = to_screen(layout.positions[node.id]);
-        (child.y - parent.y).atan2(child.x - parent.x)
+fn angle_if_non_degenerate(dx: f32, dy: f32) -> Option<f32> {
+    const EPS2: f32 = 1e-10;
+    if (dx * dx + dy * dy) > EPS2 {
+        Some(dy.atan2(dx))
     } else {
-        let center = to_screen((layout.width * 0.5, layout.height * 0.5));
-        let node_p = to_screen(layout.positions[node.id]);
-        (node_p.y - center.y).atan2(node_p.x - center.x)
+        None
     }
 }
 
-fn compute_radial_tip_angle_screen<F>(layout: &TreeLayout, node: &TreeNode, to_screen: &F) -> f32
+fn sibling_fanout_angle(tree: &Tree, parent_id: NodeId, node_id: NodeId, base_angle: f32) -> Option<f32> {
+    let siblings = &tree.nodes[parent_id].children;
+    if siblings.len() <= 1 {
+        return None;
+    }
+    let idx = siblings.iter().position(|&id| id == node_id)? as f32;
+    let n = siblings.len() as f32;
+    let spread_total = ((20.0f32).to_radians() * (n - 1.0)).min((120.0f32).to_radians());
+    let step = if n > 1.0 { spread_total / (n - 1.0) } else { 0.0 };
+    let offset = -0.5 * spread_total + idx * step;
+    Some(base_angle + offset)
+}
+
+fn compute_circular_tip_angle_screen<F>(
+    tree: &Tree,
+    layout: &TreeLayout,
+    node: &TreeNode,
+    to_screen: &F,
+) -> f32
 where
     F: Fn((f32, f32)) -> Pos2,
 {
+    let child = to_screen(layout.positions[node.id]);
+
+    // 1) Prefer terminal segment direction from continuous branch geometry.
+    if let Some(branch) = layout
+        .continuous_branches
+        .iter()
+        .find(|b| b.child == node.id)
+    {
+        if branch.points.len() >= 2 {
+            for world_p in branch.points.iter().skip(1) {
+                let p = to_screen(*world_p);
+                if let Some(angle) = angle_if_non_degenerate(child.x - p.x, child.y - p.y) {
+                    return angle;
+                }
+            }
+        }
+    }
+
+    // 2) Fallback to direct parent->child direction.
     if let Some(parent_id) = node.parent {
         let parent = to_screen(layout.positions[parent_id]);
-        let child = to_screen(layout.positions[node.id]);
-        (child.y - parent.y).atan2(child.x - parent.x)
-    } else {
-        0.0
+        if let Some(angle) = angle_if_non_degenerate(child.x - parent.x, child.y - parent.y) {
+            return angle;
+        }
+
+        // 2.5) Degenerate parent->child: fan out siblings around parent outward direction.
+        let center = to_screen((layout.width * 0.5, layout.height * 0.5));
+        let base = angle_if_non_degenerate(parent.x - center.x, parent.y - center.y)
+            .or_else(|| {
+                let mut anc = tree.nodes[parent_id].parent;
+                while let Some(anc_id) = anc {
+                    let anc_p = to_screen(layout.positions[anc_id]);
+                    if let Some(a) = angle_if_non_degenerate(parent.x - anc_p.x, parent.y - anc_p.y) {
+                        return Some(a);
+                    }
+                    anc = tree.nodes[anc_id].parent;
+                }
+                None
+            })
+            .unwrap_or(0.0);
+        if let Some(fanned) = sibling_fanout_angle(tree, parent_id, node.id, base) {
+            return fanned;
+        }
     }
+
+    // 3) Radial outward direction from layout center.
+    let center = to_screen((layout.width * 0.5, layout.height * 0.5));
+    if let Some(angle) = angle_if_non_degenerate(child.x - center.x, child.y - center.y) {
+        return angle;
+    }
+
+    // 4) Walk up ancestors until a non-overlapping point is found.
+    let mut anc = node.parent;
+    while let Some(anc_id) = anc {
+        let anc_p = to_screen(layout.positions[anc_id]);
+        if let Some(angle) = angle_if_non_degenerate(child.x - anc_p.x, child.y - anc_p.y) {
+            return angle;
+        }
+        anc = tree.nodes[anc_id].parent;
+    }
+
+    // 5) Hard fallback.
+    0.0
+}
+
+fn compute_radial_tip_angle_screen<F>(
+    tree: &Tree,
+    layout: &TreeLayout,
+    node: &TreeNode,
+    to_screen: &F,
+) -> f32
+where
+    F: Fn((f32, f32)) -> Pos2,
+{
+    let child = to_screen(layout.positions[node.id]);
+
+    // 1) Direct parent->child direction.
+    if let Some(parent_id) = node.parent {
+        let parent = to_screen(layout.positions[parent_id]);
+        if let Some(angle) = angle_if_non_degenerate(child.x - parent.x, child.y - parent.y) {
+            return angle;
+        }
+
+        // 1.5) Degenerate parent->child: fan out siblings around parent outward direction.
+        let center = to_screen((layout.width * 0.5, layout.height * 0.5));
+        let base = angle_if_non_degenerate(parent.x - center.x, parent.y - center.y)
+            .or_else(|| {
+                let mut anc = tree.nodes[parent_id].parent;
+                while let Some(anc_id) = anc {
+                    let anc_p = to_screen(layout.positions[anc_id]);
+                    if let Some(a) = angle_if_non_degenerate(parent.x - anc_p.x, parent.y - anc_p.y) {
+                        return Some(a);
+                    }
+                    anc = tree.nodes[anc_id].parent;
+                }
+                None
+            })
+            .unwrap_or(0.0);
+        if let Some(fanned) = sibling_fanout_angle(tree, parent_id, node.id, base) {
+            return fanned;
+        }
+    }
+
+    // 2) Outward direction from layout center.
+    let center = to_screen((layout.width * 0.5, layout.height * 0.5));
+    if let Some(angle) = angle_if_non_degenerate(child.x - center.x, child.y - center.y) {
+        return angle;
+    }
+
+    // 3) Walk up ancestors until a non-overlapping point is found.
+    let mut anc = node.parent;
+    while let Some(anc_id) = anc {
+        let anc_p = to_screen(layout.positions[anc_id]);
+        if let Some(angle) = angle_if_non_degenerate(child.x - anc_p.x, child.y - anc_p.y) {
+            return angle;
+        }
+        anc = tree.nodes[anc_id].parent;
+    }
+
+    // 4) Hard fallback.
+    0.0
 }
 
 fn readable_rotation(angle: f32) -> (f32, egui::Align2) {

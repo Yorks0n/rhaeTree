@@ -414,45 +414,149 @@ impl TreeLayout {
     }
 
     fn calculate_circular_label_angle(&self, tree: &Tree, node: &crate::tree::TreeNode) -> f32 {
-        if let Some(parent_id) = node.parent {
-            // Find the corresponding continuous branch to get shoulder point
-            if let Some(branch) = self.continuous_branches.iter().find(|b| b.child == node.id) {
-                if branch.points.len() >= 2 {
-                    let child_world_pos = branch.points[0];
-                    let shoulder_world_pos = branch.points[1];
-                    let dx = child_world_pos.0 - shoulder_world_pos.0;
-                    let dy = child_world_pos.1 - shoulder_world_pos.1;
-                    return dy.atan2(dx);
+        const EPS2: f32 = 1e-10;
+        let child = self.positions[node.id];
+
+        let angle_if_non_degenerate = |dx: f32, dy: f32| -> Option<f32> {
+            if (dx * dx + dy * dy) > EPS2 {
+                Some(dy.atan2(dx))
+            } else {
+                None
+            }
+        };
+
+        // 1) Prefer terminal segment from continuous branch geometry.
+        if let Some(branch) = self.continuous_branches.iter().find(|b| b.child == node.id) {
+            if branch.points.len() >= 2 {
+                for p in branch.points.iter().skip(1) {
+                    if let Some(angle) = angle_if_non_degenerate(child.0 - p.0, child.1 - p.1) {
+                        return angle;
+                    }
                 }
             }
-
-            // Fallback: use parent to child direction
-            let parent_world_pos = self.positions[parent_id];
-            let child_world_pos = self.positions[node.id];
-            let dx = child_world_pos.0 - parent_world_pos.0;
-            let dy = child_world_pos.1 - parent_world_pos.1;
-            dy.atan2(dx)
-        } else {
-            // Root node: use direction from layout center
-            let layout_center_x = self.width * 0.5;
-            let layout_center_y = self.height * 0.5;
-            let node_world_pos = self.positions[node.id];
-            let dx = node_world_pos.0 - layout_center_x;
-            let dy = node_world_pos.1 - layout_center_y;
-            dy.atan2(dx)
         }
+
+        // 2) Direct parent->child direction.
+        if let Some(parent_id) = node.parent {
+            let parent = self.positions[parent_id];
+            if let Some(angle) = angle_if_non_degenerate(child.0 - parent.0, child.1 - parent.1) {
+                return angle;
+            }
+
+            // Degenerate parent->child: fan out siblings around parent outward direction.
+            let center = (self.width * 0.5, self.height * 0.5);
+            let base = angle_if_non_degenerate(parent.0 - center.0, parent.1 - center.1)
+                .or_else(|| {
+                    let mut anc = tree.nodes[parent_id].parent;
+                    while let Some(anc_id) = anc {
+                        let p = self.positions[anc_id];
+                        if let Some(a) = angle_if_non_degenerate(parent.0 - p.0, parent.1 - p.1) {
+                            return Some(a);
+                        }
+                        anc = tree.nodes[anc_id].parent;
+                    }
+                    None
+                })
+                .unwrap_or(0.0);
+            if let Some(fanned) = Self::sibling_fanout_angle(tree, parent_id, node.id, base) {
+                return fanned;
+            }
+        }
+
+        // 3) Outward direction from layout center.
+        let center = (self.width * 0.5, self.height * 0.5);
+        if let Some(angle) = angle_if_non_degenerate(child.0 - center.0, child.1 - center.1) {
+            return angle;
+        }
+
+        // 4) Walk up ancestors until a non-overlapping point is found.
+        let mut anc = node.parent;
+        while let Some(anc_id) = anc {
+            let p = self.positions[anc_id];
+            if let Some(angle) = angle_if_non_degenerate(child.0 - p.0, child.1 - p.1) {
+                return angle;
+            }
+            anc = tree.nodes[anc_id].parent;
+        }
+
+        // 5) Hard fallback.
+        0.0
     }
 
     fn calculate_radial_label_angle(&self, tree: &Tree, node: &crate::tree::TreeNode) -> f32 {
+        const EPS2: f32 = 1e-10;
+        let child = self.positions[node.id];
+        let angle_if_non_degenerate = |dx: f32, dy: f32| -> Option<f32> {
+            if (dx * dx + dy * dy) > EPS2 {
+                Some(dy.atan2(dx))
+            } else {
+                None
+            }
+        };
+
+        // 1) Direct parent->child direction.
         if let Some(parent_id) = node.parent {
-            let parent_world_pos = self.positions[parent_id];
-            let node_world_pos = self.positions[node.id];
-            let dx = node_world_pos.0 - parent_world_pos.0;
-            let dy = node_world_pos.1 - parent_world_pos.1;
-            dy.atan2(dx)
-        } else {
-            0.0 // Root node defaults to right
+            let parent = self.positions[parent_id];
+            if let Some(angle) = angle_if_non_degenerate(child.0 - parent.0, child.1 - parent.1) {
+                return angle;
+            }
+
+            // Degenerate parent->child: fan out siblings around parent outward direction.
+            let center = (self.width * 0.5, self.height * 0.5);
+            let base = angle_if_non_degenerate(parent.0 - center.0, parent.1 - center.1)
+                .or_else(|| {
+                    let mut anc = tree.nodes[parent_id].parent;
+                    while let Some(anc_id) = anc {
+                        let p = self.positions[anc_id];
+                        if let Some(a) = angle_if_non_degenerate(parent.0 - p.0, parent.1 - p.1) {
+                            return Some(a);
+                        }
+                        anc = tree.nodes[anc_id].parent;
+                    }
+                    None
+                })
+                .unwrap_or(0.0);
+            if let Some(fanned) = Self::sibling_fanout_angle(tree, parent_id, node.id, base) {
+                return fanned;
+            }
         }
+
+        // 2) Outward direction from layout center.
+        let center = (self.width * 0.5, self.height * 0.5);
+        if let Some(angle) = angle_if_non_degenerate(child.0 - center.0, child.1 - center.1) {
+            return angle;
+        }
+
+        // 3) Walk up ancestors until a non-overlapping point is found.
+        let mut anc = node.parent;
+        while let Some(anc_id) = anc {
+            let p = self.positions[anc_id];
+            if let Some(angle) = angle_if_non_degenerate(child.0 - p.0, child.1 - p.1) {
+                return angle;
+            }
+            anc = tree.nodes[anc_id].parent;
+        }
+
+        // 4) Hard fallback.
+        0.0
+    }
+
+    fn sibling_fanout_angle(
+        tree: &Tree,
+        parent_id: NodeId,
+        node_id: NodeId,
+        base_angle: f32,
+    ) -> Option<f32> {
+        let siblings = &tree.nodes[parent_id].children;
+        if siblings.len() <= 1 {
+            return None;
+        }
+        let idx = siblings.iter().position(|&id| id == node_id)? as f32;
+        let n = siblings.len() as f32;
+        let spread_total = ((20.0f32).to_radians() * (n - 1.0)).min((120.0f32).to_radians());
+        let step = if n > 1.0 { spread_total / (n - 1.0) } else { 0.0 };
+        let offset = -0.5 * spread_total + idx * step;
+        Some(base_angle + offset)
     }
 
     fn calculate_rotated_label_bounds(
