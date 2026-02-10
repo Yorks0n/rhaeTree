@@ -9,6 +9,7 @@ use rfd::FileDialog;
 use crate::app::{AppConfig, ExportFormat};
 use crate::io;
 use crate::tree::painter::{TipLabelDisplay, TipLabelFontFamily, TipLabelNumberFormat};
+use crate::tree::skia_renderer::SkiaTreeRenderer;
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
 use crate::tree::{NodeId, TreeBundle};
 use crate::ui;
@@ -55,6 +56,8 @@ pub struct FigTreeGui {
     branch_transform: BranchTransform,
     pending_export_path: Option<(PathBuf, crate::app::ExportFormat)>,
     tree_canvas_rect: Option<egui::Rect>,
+    tree_texture: Option<egui::TextureHandle>,
+    skia_renderer: SkiaTreeRenderer,
     pixels_per_point: f32,
     highlighted_clade: Option<NodeId>,
     annotate_dialog_open: bool,
@@ -246,6 +249,8 @@ impl FigTreeGui {
             branch_transform: BranchTransform::Proportional,
             pending_export_path: None,
             tree_canvas_rect: None,
+            tree_texture: None,
+            skia_renderer: SkiaTreeRenderer::new(),
             pixels_per_point: 1.0,
             highlighted_clade: None,
             annotate_dialog_open: false,
@@ -733,16 +738,71 @@ impl FigTreeGui {
                 let selected_nodes = self.tree_viewer.selected_nodes().clone();
                 let selected_tips = self.tree_viewer.selected_tips().clone();
 
-                let tip_label_hits = self.tree_painter.paint_tree(
-                    &painter,
-                    &tree,
-                    &layout,
-                    &selected_nodes,
-                    &selected_tips,
-                    rect,
-                    margin,
-                    Some(self.tree_viewer.selection_mode()),
-                );
+                let tip_label_hits = match self
+                    .skia_renderer
+                    .render(
+                        &tree,
+                        &layout,
+                        &self.tree_painter,
+                        &selected_nodes,
+                        &selected_tips,
+                        rect,
+                        inner,
+                        inner,
+                        1.0,
+                        Some(self.tree_viewer.selection_mode()),
+                        self.pixels_per_point,
+                        1.0,
+                    )
+                {
+                    Ok(output) => {
+                        if let Some(texture) = self.tree_texture.as_mut() {
+                            texture.set(output.image, egui::TextureOptions::LINEAR);
+                        } else {
+                            self.tree_texture = Some(ui.ctx().load_texture(
+                                "tree_canvas_skia",
+                                output.image,
+                                egui::TextureOptions::LINEAR,
+                            ));
+                        }
+
+                        if let Some(texture) = &self.tree_texture {
+                            painter.image(
+                                texture.id(),
+                                rect,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                egui::Color32::WHITE,
+                            );
+                        }
+
+                        let offset = rect.min.to_vec2();
+                        output
+                            .tip_label_hits
+                            .into_iter()
+                            .map(|mut hit| {
+                                hit.rect = hit.rect.translate(offset);
+                                hit.anchor_pos += offset;
+                                hit
+                            })
+                            .collect()
+                    }
+                    Err(err) => {
+                        self.last_error = Some(format!("Skia render failed: {err}"));
+                        self.tree_painter.paint_tree(
+                            &painter,
+                            &tree,
+                            &layout,
+                            &selected_nodes,
+                            &selected_tips,
+                            rect,
+                            margin,
+                            Some(self.tree_viewer.selection_mode()),
+                        )
+                    }
+                };
 
                 // Save the canvas rect for export
                 self.tree_canvas_rect = Some(rect);

@@ -4,6 +4,8 @@ use phylotree::tree::{Node as PhyloNode, Tree as PhyloTree};
 
 pub mod layout;
 pub mod painter;
+pub mod scene_graph;
+pub mod skia_renderer;
 pub mod viewer;
 
 pub type NodeId = phylotree::tree::NodeId;
