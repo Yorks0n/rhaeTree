@@ -201,6 +201,9 @@ fn parse_hex_color(input: &str) -> Option<Color32> {
 }
 
 impl FigTreeGui {
+    const MAX_RENDER_TEXTURE_EDGE: f32 = 8192.0;
+    const MAX_RENDER_PIXELS: f32 = 16_000_000.0;
+
     pub fn new(_cc: &eframe::CreationContext<'_>, config: AppConfig) -> Self {
         let mut app = Self {
             config,
@@ -744,6 +747,25 @@ impl FigTreeGui {
         hasher.finish()
     }
 
+    fn render_resolution_scale(&self, canvas_width: f32, canvas_height: f32) -> f32 {
+        let ppp = self.pixels_per_point.max(1.0);
+        let width_px = (canvas_width.max(1.0) * ppp).max(1.0);
+        let height_px = (canvas_height.max(1.0) * ppp).max(1.0);
+
+        let edge_scale = (Self::MAX_RENDER_TEXTURE_EDGE / width_px)
+            .min(Self::MAX_RENDER_TEXTURE_EDGE / height_px)
+            .min(1.0);
+
+        let area = width_px * height_px;
+        let area_scale = if area > Self::MAX_RENDER_PIXELS {
+            (Self::MAX_RENDER_PIXELS / area).sqrt()
+        } else {
+            1.0
+        };
+
+        edge_scale.min(area_scale).clamp(0.1, 1.0)
+    }
+
     fn draw_tree_canvas(&mut self, ui: &mut egui::Ui) {
         if let Some(tree_ref) = self.tree_viewer.current_tree() {
             let raw_height = ui.available_height();
@@ -821,7 +843,7 @@ impl FigTreeGui {
                         1.0,
                         Some(self.tree_viewer.selection_mode()),
                         self.pixels_per_point,
-                        1.0,
+                        self.render_resolution_scale(canvas_width, canvas_height),
                     ) {
                         Ok(output) => {
                             if let Some(texture) = self.tree_texture.as_mut() {
@@ -2108,7 +2130,7 @@ impl eframe::App for FigTreeGui {
                         ) {
                             ui.label("Zoom:");
                             ui.add(
-                                egui::Slider::new(&mut self.tree_viewer.zoom, 1.0..=10.0)
+                                egui::Slider::new(&mut self.tree_viewer.zoom, 1.0..=5.0)
                                     .show_value(false),
                             );
 
