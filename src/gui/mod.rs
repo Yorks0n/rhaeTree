@@ -468,29 +468,23 @@ impl FigTreeGui {
         }
     }
 
-    fn export_png_dialog(&mut self, ctx: &egui::Context) {
+    fn export_png_dialog(&mut self, _ctx: &egui::Context) {
         if let Some(path) = FileDialog::new()
             .add_filter("PNG Image", &["png"])
             .set_file_name("tree.png")
             .save_file()
         {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-            self.status = format!("Requesting screenshot for export to {}", path.display());
-            // Store the path for later use when screenshot is ready
-            self.pending_export_path = Some((path, ExportFormat::Png));
+            self.export_raster_format(&path, ExportFormat::Png);
         }
     }
 
-    fn export_jpeg_dialog(&mut self, ctx: &egui::Context) {
+    fn export_jpeg_dialog(&mut self, _ctx: &egui::Context) {
         if let Some(path) = FileDialog::new()
             .add_filter("JPEG Image", &["jpg", "jpeg"])
             .set_file_name("tree.jpg")
             .save_file()
         {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-            self.status = format!("Requesting screenshot for export to {}", path.display());
-            // Store the path for later use when screenshot is ready
-            self.pending_export_path = Some((path, ExportFormat::Jpeg));
+            self.export_raster_format(&path, ExportFormat::Jpeg);
         }
     }
 
@@ -606,6 +600,155 @@ impl FigTreeGui {
         }
     }
 
+    fn export_raster_format(&mut self, path: &std::path::Path, format: ExportFormat) {
+        // Render offscreen at higher resolution to avoid low-quality screenshot exports.
+        if let Some(mut tree) = self.tree_viewer.current_tree().cloned() {
+            if self.transform_branches_enabled {
+                match self.branch_transform {
+                    BranchTransform::Equal => tree.apply_equal_transform(),
+                    BranchTransform::Cladogram => tree.apply_cladogram_transform(),
+                    BranchTransform::Proportional => tree.apply_proportional_transform(),
+                }
+            }
+
+            if let Some(layout) =
+                crate::tree::layout::TreeLayout::from_tree(&tree, self.current_layout).map(
+                    |layout| {
+                        layout.with_tip_labels(
+                            &tree,
+                            self.tree_painter.show_tip_labels,
+                            self.tree_painter.tip_label_font_size,
+                            self.tree_painter.tip_label_font_family.into_font_family(),
+                        )
+                    },
+                )
+            {
+                let expansion = if matches!(
+                    self.current_layout,
+                    crate::tree::layout::TreeLayoutType::Rectangular
+                        | crate::tree::layout::TreeLayoutType::Slanted
+                ) {
+                    self.tree_viewer.vertical_expansion()
+                } else {
+                    1.0
+                };
+
+                let zoom = if matches!(
+                    self.current_layout,
+                    crate::tree::layout::TreeLayoutType::Rectangular
+                        | crate::tree::layout::TreeLayoutType::Slanted
+                ) {
+                    self.tree_viewer.zoom.max(1.0)
+                } else {
+                    1.0
+                };
+
+                let base_width = 1200.0;
+                let base_height = 900.0;
+                let export_scale = 2.0;
+                let width = base_width * zoom * export_scale;
+                let height = base_height * expansion * zoom * export_scale;
+
+                let mut scene = crate::export::svg::build_export_scene(
+                    &tree,
+                    &layout,
+                    &self.tree_painter,
+                    width,
+                    height,
+                );
+                for primitive in &mut scene.primitives {
+                    match primitive {
+                        crate::tree::scene_graph::ScenePrimitive::Text { size, .. } => {
+                            *size *= export_scale;
+                        }
+                        crate::tree::scene_graph::ScenePrimitive::FillCircle { radius, .. } => {
+                            *radius *= export_scale;
+                        }
+                        crate::tree::scene_graph::ScenePrimitive::StrokeLine { style, .. }
+                        | crate::tree::scene_graph::ScenePrimitive::StrokePolyline { style, .. }
+                        | crate::tree::scene_graph::ScenePrimitive::StrokeCircularBranch {
+                            style,
+                            ..
+                        } => {
+                            style.width *= export_scale;
+                            if let Some((dash, gap)) = &mut style.dash {
+                                *dash *= export_scale;
+                                *gap *= export_scale;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                let image = match self.render_backend {
+                    RenderBackend::Vello => self
+                        .vello_renderer
+                        .render_scene_to_image(&scene, 1.0, 1.0)
+                        .or_else(|_| self.skia_renderer.render_scene_to_image(&scene, 1.0, 1.0))
+                        .map(|out| out.image),
+                    RenderBackend::Skia => self
+                        .skia_renderer
+                        .render_scene_to_image(&scene, 1.0, 1.0)
+                        .or_else(|_| self.vello_renderer.render_scene_to_image(&scene, 1.0, 1.0))
+                        .map(|out| out.image),
+                };
+
+                match image.and_then(|img| self.save_color_image_to_file(&img, path, format)) {
+                    Ok(_) => {
+                        self.status = format!("Successfully exported to {}", path.display());
+                        self.last_error = None;
+                    }
+                    Err(e) => {
+                        self.last_error = Some(format!("Failed to export: {}", e));
+                    }
+                }
+            } else {
+                self.last_error = Some("Failed to create tree layout".to_string());
+            }
+        } else {
+            self.last_error = Some("No tree loaded".to_string());
+        }
+    }
+
+    fn save_color_image_to_file(
+        &self,
+        image: &egui::ColorImage,
+        path: &std::path::Path,
+        format: ExportFormat,
+    ) -> Result<(), String> {
+        use image::{ImageBuffer, RgbaImage};
+        use std::fs::File;
+        use std::io::BufWriter;
+
+        let rgba_image: RgbaImage = ImageBuffer::from_raw(
+            image.width() as u32,
+            image.height() as u32,
+            image.pixels.iter().flat_map(|c| c.to_array()).collect(),
+        )
+        .ok_or_else(|| "Failed to create image buffer".to_string())?;
+
+        match format {
+            ExportFormat::Png => {
+                rgba_image
+                    .save_with_format(path, image::ImageFormat::Png)
+                    .map_err(|e| format!("Failed to save PNG: {}", e))?;
+            }
+            ExportFormat::Jpeg => {
+                let rgb_image = image::DynamicImage::ImageRgba8(rgba_image).to_rgb8();
+                let file = File::create(path).map_err(|e| format!("Failed to create JPEG: {e}"))?;
+                let mut writer = BufWriter::new(file);
+                let mut encoder =
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, 95);
+                encoder
+                    .encode_image(&image::DynamicImage::ImageRgb8(rgb_image))
+                    .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
+            }
+            _ => return Err(format!("Unsupported export format: {:?}", format)),
+        }
+
+        Ok(())
+    }
+
     fn save_screenshot_to_file(
         &self,
         screenshot: &egui::ColorImage,
@@ -644,26 +787,14 @@ impl FigTreeGui {
             full_image
         };
 
-        // Save based on format
-        match format {
-            ExportFormat::Png => {
-                rgba_image
-                    .save_with_format(path, image::ImageFormat::Png)
-                    .map_err(|e| format!("Failed to save PNG: {}", e))?;
-            }
-            ExportFormat::Jpeg => {
-                // Convert RGBA to RGB for JPEG (JPEG doesn't support transparency)
-                let rgb_image = image::DynamicImage::ImageRgba8(rgba_image).to_rgb8();
-                rgb_image
-                    .save_with_format(path, image::ImageFormat::Jpeg)
-                    .map_err(|e| format!("Failed to save JPEG: {}", e))?;
-            }
-            _ => {
-                return Err(format!("Unsupported export format: {:?}", format));
-            }
-        }
-
-        Ok(())
+        self.save_color_image_to_file(
+            &egui::ColorImage::from_rgba_unmultiplied(
+                [rgba_image.width() as usize, rgba_image.height() as usize],
+                rgba_image.as_raw(),
+            ),
+            path,
+            format,
+        )
     }
 
     fn build_display_tree_layout(
