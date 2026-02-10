@@ -128,11 +128,18 @@ pub fn build_tree_scene(
                 end_angle,
                 color,
             } => {
-                let c = to_local(to_screen((center.x, center.y)));
+                let center_w = (center.x, center.y);
+                let c = to_local(to_screen(center_w));
+                // Radii are in layout space; convert to current screen space so
+                // circular highlights match tree geometry after zoom/fit transforms.
+                let inner_r = (to_local(to_screen((center_w.0 + inner_radius, center_w.1))) - c)
+                    .length();
+                let outer_r = (to_local(to_screen((center_w.0 + outer_radius, center_w.1))) - c)
+                    .length();
                 primitives.push(ScenePrimitive::FillSector {
                     center: c,
-                    inner_radius,
-                    outer_radius,
+                    inner_radius: inner_r,
+                    outer_radius: outer_r,
                     start_angle,
                     end_angle,
                     color,

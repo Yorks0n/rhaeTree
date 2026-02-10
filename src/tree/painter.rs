@@ -669,7 +669,10 @@ impl TreePainter {
             [single] => Self::approximate_circle(*single, padding.max(2.0), 16),
             [a, b] => Self::approximate_capsule(*a, *b, padding.max(2.0)),
             _ => {
-                let hull = Self::convex_hull(&unique_points);
+                // Clamp isolated far-out points before hull construction to avoid
+                // large one-point protrusions on untransformed radial trees.
+                let stabilized = Self::stabilize_polygon_points(&unique_points, padding);
+                let hull = Self::convex_hull(&stabilized);
                 if hull.len() < 3 {
                     if hull.len() == 2 {
                         Self::approximate_capsule(hull[0], hull[1], padding.max(2.0))
@@ -681,6 +684,70 @@ impl TreePainter {
                 }
             }
         }
+    }
+
+    fn stabilize_polygon_points(points: &[egui::Pos2], padding: f32) -> Vec<egui::Pos2> {
+        if points.len() < 4 {
+            return points.to_vec();
+        }
+
+        let n = points.len() as f32;
+        let center = {
+            let mut sx = 0.0;
+            let mut sy = 0.0;
+            for p in points {
+                sx += p.x;
+                sy += p.y;
+            }
+            egui::pos2(sx / n, sy / n)
+        };
+
+        let mut radii: Vec<f32> = points
+            .iter()
+            .map(|p| {
+                let dx = p.x - center.x;
+                let dy = p.y - center.y;
+                (dx * dx + dy * dy).sqrt()
+            })
+            .collect();
+        radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        let median = radii[radii.len() / 2];
+        if median <= 1e-3 {
+            return points.to_vec();
+        }
+
+        let max_allowed = (median * 1.85).max(median + padding * 2.5);
+        let outlier_count = points
+            .iter()
+            .filter(|p| {
+                let dx = p.x - center.x;
+                let dy = p.y - center.y;
+                (dx * dx + dy * dy).sqrt() > max_allowed
+            })
+            .count();
+
+        // Only suppress isolated spikes, not broad elongated clades.
+        if outlier_count == 0 || outlier_count * 3 > points.len() {
+            return points.to_vec();
+        }
+
+        points
+            .iter()
+            .map(|p| {
+                let dx = p.x - center.x;
+                let dy = p.y - center.y;
+                let r = (dx * dx + dy * dy).sqrt();
+                if r > max_allowed {
+                    let inv = 1.0 / r.max(1e-6);
+                    egui::pos2(
+                        center.x + dx * inv * max_allowed,
+                        center.y + dy * inv * max_allowed,
+                    )
+                } else {
+                    *p
+                }
+            })
+            .collect()
     }
 
     fn approximate_circle(center: egui::Pos2, radius: f32, segments: usize) -> Vec<egui::Pos2> {
