@@ -1516,6 +1516,17 @@ impl eframe::App for FigTreeGui {
                         ui.close();
                         ctx.request_repaint();
                     }
+                    let has_highlights = !self.tree_painter.highlighted_clades().is_empty();
+                    if ui
+                        .add_enabled(has_highlights, egui::Button::new("Clear Highlight"))
+                        .clicked()
+                    {
+                        self.record_undo_step();
+                        self.tree_painter.clear_highlighted_clades();
+                        self.status = "Cleared all highlights".to_string();
+                        ui.close();
+                        ctx.request_repaint();
+                    }
                 });
 
                 ui.menu_button("Tree", |ui| {

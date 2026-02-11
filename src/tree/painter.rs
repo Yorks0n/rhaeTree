@@ -586,7 +586,12 @@ impl TreePainter {
 
     fn compute_radial_highlights(&self, tree: &Tree, layout: &TreeLayout) -> Vec<HighlightShape> {
         let mut highlights = Vec::new();
-        let padding = (layout.width.max(layout.height) * 0.02).max(2.0);
+        let padding = (layout.width.max(layout.height) * 0.015).max(1.5);
+        let center = if let Some(root_id) = tree.root {
+            layout.positions[root_id]
+        } else {
+            (layout.width * 0.5, layout.height * 0.5)
+        };
 
         for (&highlighted_node_id, &highlight_color) in &self.highlighted_clades {
             let leaf_descendants = self.collect_leaf_descendants(tree, highlighted_node_id);
@@ -594,32 +599,39 @@ impl TreePainter {
                 continue;
             }
 
-            let mut points: Vec<egui::Pos2> = leaf_descendants
-                .iter()
-                .map(|&tip_id| {
-                    let pos = layout.positions[tip_id];
-                    egui::pos2(pos.0, pos.1)
-                })
-                .collect();
-
             let node_pos = layout.positions[highlighted_node_id];
-            points.push(egui::pos2(node_pos.0, node_pos.1));
-
-            if let Some(parent_id) = tree.nodes[highlighted_node_id].parent {
+            let branch_start = if let Some(parent_id) = tree.nodes[highlighted_node_id].parent {
                 let parent_pos = layout.positions[parent_id];
-                let direction = egui::vec2(node_pos.0 - parent_pos.0, node_pos.1 - parent_pos.1);
-                let length = direction.length();
-                if length > 1e-3 {
-                    let normalized = direction / length;
-                    let offset_distance = length * 0.2 + padding;
-                    points.push(egui::pos2(
-                        node_pos.0 + normalized.x * offset_distance,
-                        node_pos.1 + normalized.y * offset_distance,
-                    ));
-                }
+                egui::pos2(
+                    (node_pos.0 + parent_pos.0) * 0.5,
+                    (node_pos.1 + parent_pos.1) * 0.5,
+                )
+            } else {
+                egui::pos2(node_pos.0, node_pos.1)
+            };
+
+            let ordered_tips = self.radial_ordered_leaf_tips(layout, center, &leaf_descendants);
+            if ordered_tips.is_empty() {
+                continue;
             }
 
-            let polygon = Self::polygon_from_points(&points, padding);
+            let mut polygon = Vec::with_capacity(ordered_tips.len() + 1);
+            polygon.push(branch_start);
+            for tip_id in ordered_tips {
+                let p = layout.positions[tip_id];
+                polygon.push(egui::pos2(p.0, p.1));
+            }
+
+            // Single-tip clade: widen near tip to avoid degenerate triangle.
+            if polygon.len() == 2 {
+                let a = polygon[0];
+                let b = polygon[1];
+                let dir = egui::vec2(b.x - a.x, b.y - a.y);
+                let len = dir.length().max(1e-6);
+                let normal = egui::vec2(-dir.y / len, dir.x / len) * padding;
+                polygon = vec![a, b + normal, b - normal];
+            }
+
             if polygon.len() >= 3 {
                 highlights.push(HighlightShape::Polygon {
                     points: polygon,
@@ -669,10 +681,7 @@ impl TreePainter {
             [single] => Self::approximate_circle(*single, padding.max(2.0), 16),
             [a, b] => Self::approximate_capsule(*a, *b, padding.max(2.0)),
             _ => {
-                // Clamp isolated far-out points before hull construction to avoid
-                // large one-point protrusions on untransformed radial trees.
-                let stabilized = Self::stabilize_polygon_points(&unique_points, padding);
-                let hull = Self::convex_hull(&stabilized);
+                let hull = Self::convex_hull(&unique_points);
                 if hull.len() < 3 {
                     if hull.len() == 2 {
                         Self::approximate_capsule(hull[0], hull[1], padding.max(2.0))
@@ -686,68 +695,58 @@ impl TreePainter {
         }
     }
 
-    fn stabilize_polygon_points(points: &[egui::Pos2], padding: f32) -> Vec<egui::Pos2> {
-        if points.len() < 4 {
-            return points.to_vec();
-        }
-
-        let n = points.len() as f32;
-        let center = {
-            let mut sx = 0.0;
-            let mut sy = 0.0;
-            for p in points {
-                sx += p.x;
-                sy += p.y;
-            }
-            egui::pos2(sx / n, sy / n)
-        };
-
-        let mut radii: Vec<f32> = points
+    fn radial_ordered_leaf_tips(
+        &self,
+        layout: &TreeLayout,
+        center: (f32, f32),
+        leaf_descendants: &[NodeId],
+    ) -> Vec<NodeId> {
+        let mut tips: Vec<(NodeId, f32)> = leaf_descendants
             .iter()
-            .map(|p| {
-                let dx = p.x - center.x;
-                let dy = p.y - center.y;
-                (dx * dx + dy * dy).sqrt()
+            .map(|&id| {
+                let pos = layout.positions[id];
+                let dx = pos.0 - center.0;
+                let dy = pos.1 - center.1;
+                let mut angle = dy.atan2(dx);
+                if angle < 0.0 {
+                    angle += std::f32::consts::TAU;
+                }
+                (id, angle)
             })
             .collect();
-        radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-        let median = radii[radii.len() / 2];
-        if median <= 1e-3 {
-            return points.to_vec();
+
+        if tips.is_empty() {
+            return Vec::new();
         }
 
-        let max_allowed = (median * 1.85).max(median + padding * 2.5);
-        let outlier_count = points
-            .iter()
-            .filter(|p| {
-                let dx = p.x - center.x;
-                let dy = p.y - center.y;
-                (dx * dx + dy * dy).sqrt() > max_allowed
-            })
-            .count();
-
-        // Only suppress isolated spikes, not broad elongated clades.
-        if outlier_count == 0 || outlier_count * 3 > points.len() {
-            return points.to_vec();
+        tips.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+        if tips.len() <= 2 {
+            return tips.into_iter().map(|(id, _)| id).collect();
         }
 
-        points
-            .iter()
-            .map(|p| {
-                let dx = p.x - center.x;
-                let dy = p.y - center.y;
-                let r = (dx * dx + dy * dy).sqrt();
-                if r > max_allowed {
-                    let inv = 1.0 / r.max(1e-6);
-                    egui::pos2(
-                        center.x + dx * inv * max_allowed,
-                        center.y + dy * inv * max_allowed,
-                    )
-                } else {
-                    *p
-                }
-            })
-            .collect()
+        // Rotate sequence after largest angular gap to keep contiguous clade boundary.
+        let mut cut = 0usize;
+        let mut max_gap = -1.0f32;
+        for i in 0..tips.len() {
+            let a = tips[i].1;
+            let b = if i + 1 < tips.len() {
+                tips[i + 1].1
+            } else {
+                tips[0].1 + std::f32::consts::TAU
+            };
+            let gap = b - a;
+            if gap > max_gap {
+                max_gap = gap;
+                cut = i;
+            }
+        }
+
+        let start = (cut + 1) % tips.len();
+        let mut ordered = Vec::with_capacity(tips.len());
+        for k in 0..tips.len() {
+            ordered.push(tips[(start + k) % tips.len()].0);
+        }
+        ordered
     }
 
     fn approximate_circle(center: egui::Pos2, radius: f32, segments: usize) -> Vec<egui::Pos2> {
