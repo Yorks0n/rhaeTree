@@ -62,7 +62,7 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
         .collect();
 
     if !internal_nodes.is_empty() {
-        for iteration in 0..DAYLIGHT_MAX_ITERATIONS {
+        for _iteration in 0..DAYLIGHT_MAX_ITERATIONS {
             let mut total_change = 0.0f32;
             for node_id in &internal_nodes {
                 total_change += apply_daylight_to_node(tree, *node_id, &mut geometry);

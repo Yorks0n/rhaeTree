@@ -162,36 +162,6 @@ impl Tree {
         }
     }
 
-    /// Calculate the maximum distance from each node to any leaf in its subtree
-    fn calculate_max_distances_to_leaves(&self) -> Vec<f64> {
-        let mut distances = vec![0.0; self.nodes.len()];
-
-        fn calculate_distance(node_id: NodeId, nodes: &[TreeNode], distances: &mut [f64]) -> f64 {
-            let node = &nodes[node_id];
-
-            if node.is_leaf() {
-                distances[node_id] = 0.0;
-                return 0.0;
-            }
-
-            let mut max_distance: f64 = 0.0;
-            for &child_id in &node.children {
-                let child_distance = calculate_distance(child_id, nodes, distances);
-                let branch_length = nodes[child_id].length.unwrap_or(1.0);
-                max_distance = max_distance.max(child_distance + branch_length);
-            }
-
-            distances[node_id] = max_distance;
-            max_distance
-        }
-
-        if let Some(root_id) = self.root {
-            calculate_distance(root_id, &self.nodes, &mut distances);
-        }
-
-        distances
-    }
-
     /// Apply equal branch transformation: all branches have the same length
     pub fn apply_equal_transform(&mut self) {
         for node in &mut self.nodes {
@@ -308,36 +278,12 @@ impl Tree {
         self.nodes.get_mut(id)
     }
 
-    pub fn root(&self) -> Option<&TreeNode> {
-        self.root.and_then(|id| self.nodes.get(id))
-    }
-
     pub fn leaf_count(&self) -> usize {
         self.nodes.iter().filter(|node| node.is_leaf()).count()
     }
 
     pub fn external_nodes(&self) -> Vec<&TreeNode> {
         self.nodes.iter().filter(|node| node.is_leaf()).collect()
-    }
-
-    pub fn internal_nodes(&self) -> Vec<&TreeNode> {
-        self.nodes.iter().filter(|node| !node.is_leaf()).collect()
-    }
-
-    pub fn layout(&self) -> Option<layout::TreeLayout> {
-        layout::TreeLayout::from_tree_default(self)
-    }
-
-    pub fn set_attribute(&mut self, key: String, value: String) {
-        self.attributes.insert(key, value);
-    }
-
-    pub fn get_attribute(&self, key: &str) -> Option<&String> {
-        self.attributes.get(key)
-    }
-
-    pub fn phylotree(&self) -> &PhyloTree {
-        &self.phylo
     }
 
     pub fn node_numeric_attribute_keys(&self) -> Vec<String> {
@@ -417,10 +363,6 @@ impl TreeNode {
         self.children.is_empty()
     }
 
-    pub fn is_root(&self) -> bool {
-        self.parent.is_none()
-    }
-
     pub fn set_attribute(&mut self, key: String, value: String) {
         self.attributes.insert(key.clone(), value.clone());
         self.update_numeric_attribute(&key, &value);
@@ -434,10 +376,6 @@ impl TreeNode {
         self.numeric_attributes
             .get(key)
             .and_then(NodeNumericValue::as_scalar)
-    }
-
-    pub fn numeric_attribute(&self, key: &str) -> Option<&NodeNumericValue> {
-        self.numeric_attributes.get(key)
     }
 
     pub fn numeric_range_attribute(&self, key: &str) -> Option<(f64, f64)> {

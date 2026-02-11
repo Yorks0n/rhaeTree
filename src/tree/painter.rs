@@ -3157,15 +3157,6 @@ pub enum ShapeSizeMode {
     Attribute,
 }
 
-impl ShapeSizeMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Fixed => "Fixed",
-            Self::Attribute => "Attribute",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShapeColorMode {
     UserSelection,

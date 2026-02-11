@@ -11,16 +11,6 @@ pub enum TextSearchType {
     Regex,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NumberSearchType {
-    Equals,
-    NotEquals,
-    GreaterThan,
-    EqualsOrGreaterThan,
-    LessThan,
-    EqualsOrLessThan,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SelectionMode {
     Clade,
@@ -72,13 +62,6 @@ impl TreeViewer {
         self.trees = trees;
         self.current_tree_index = 0;
         self.clear_selection();
-    }
-
-    pub fn add_tree(&mut self, tree: Tree) {
-        self.original_trees.push(tree.clone());
-        self.rooted_trees.push(None);
-        self.unordered_trees.push(None);
-        self.trees.push(tree);
     }
 
     pub fn trees(&self) -> &[Tree] {
@@ -134,10 +117,6 @@ impl TreeViewer {
             self.current_tree_index -= 1;
             self.clear_selection();
         }
-    }
-
-    pub fn has_selection(&self) -> bool {
-        !self.selected_nodes.is_empty() || !self.selected_tips.is_empty()
     }
 
     pub fn selected_nodes(&self) -> &HashSet<NodeId> {
@@ -270,109 +249,6 @@ impl TreeViewer {
         }
     }
 
-    pub fn select_nodes(
-        &mut self,
-        attribute_name: Option<&str>,
-        search_type: TextSearchType,
-        search_string: &str,
-        case_sensitive: bool,
-    ) {
-        if let Some(tree) = self.current_tree() {
-            let node_ids: Vec<NodeId> = tree.nodes.iter().map(|n| n.id).collect();
-            let mut selected_ids = Vec::new();
-
-            for node_id in node_ids {
-                if let Some(node) = tree.node(node_id) {
-                    if Self::matches_node(
-                        node,
-                        attribute_name,
-                        search_type,
-                        search_string,
-                        case_sensitive,
-                    ) {
-                        selected_ids.push(node_id);
-                    }
-                }
-            }
-
-            self.clear_selection();
-            for node_id in selected_ids {
-                self.selected_nodes.insert(node_id);
-            }
-        }
-    }
-
-    pub fn select_taxa_numeric(
-        &mut self,
-        attribute_name: &str,
-        search_type: NumberSearchType,
-        search_value: f64,
-    ) {
-        if let Some(tree) = self.current_tree() {
-            let external_node_ids: Vec<NodeId> =
-                tree.external_nodes().iter().map(|n| n.id).collect();
-            let mut selected_ids = Vec::new();
-
-            for node_id in external_node_ids {
-                if let Some(node) = tree.node(node_id) {
-                    if Self::matches_numeric(node, attribute_name, search_type, search_value) {
-                        selected_ids.push(node_id);
-                    }
-                }
-            }
-
-            self.clear_selection();
-            for node_id in selected_ids {
-                self.selected_tips.insert(node_id);
-            }
-        }
-    }
-
-    pub fn select_nodes_numeric(
-        &mut self,
-        attribute_name: &str,
-        search_type: NumberSearchType,
-        search_value: f64,
-    ) {
-        if let Some(tree) = self.current_tree() {
-            let node_ids: Vec<NodeId> = tree.nodes.iter().map(|n| n.id).collect();
-            let mut selected_ids = Vec::new();
-
-            for node_id in node_ids {
-                if let Some(node) = tree.node(node_id) {
-                    if Self::matches_numeric(node, attribute_name, search_type, search_value) {
-                        selected_ids.push(node_id);
-                    }
-                }
-            }
-
-            self.clear_selection();
-            for node_id in selected_ids {
-                self.selected_nodes.insert(node_id);
-            }
-        }
-    }
-
-    pub fn select_all(&mut self) {
-        if let Some(tree) = self.current_tree() {
-            match self.selection_mode {
-                SelectionMode::Taxa | SelectionMode::Tips => {
-                    let external_node_ids: Vec<NodeId> =
-                        tree.external_nodes().iter().map(|n| n.id).collect();
-                    for node_id in external_node_ids {
-                        self.selected_tips.insert(node_id);
-                    }
-                }
-                SelectionMode::Nodes | SelectionMode::Clade => {
-                    let node_ids: Vec<NodeId> = tree.nodes.iter().map(|n| n.id).collect();
-                    for node_id in node_ids {
-                        self.selected_nodes.insert(node_id);
-                    }
-                }
-            }
-        }
-    }
-
     pub fn zoom(&self) -> f32 {
         self.zoom
     }
@@ -387,11 +263,6 @@ impl TreeViewer {
 
     pub fn set_vertical_expansion(&mut self, expansion: f32) {
         self.vertical_expansion = expansion.max(1.0).min(2.0);
-    }
-
-    pub fn set_layout_type(&mut self, layout_type: crate::tree::layout::TreeLayoutType) {
-        // Layout type is handled by the tree layout system, this is a placeholder
-        // for future implementation where layout type might affect viewer state
     }
 
     pub fn reroot_at_branch(&mut self, node_id: NodeId) {
@@ -597,7 +468,7 @@ impl TreeViewer {
 
         // Create a virtual root node
         let virtual_root_id = new_tree.nodes.len();
-        let mut virtual_root =
+        let virtual_root =
             TreeNode::new(virtual_root_id, Some("__virtual_root__".to_string()), None);
 
         // Add the virtual root to nodes first
@@ -760,64 +631,6 @@ impl TreeViewer {
         false
     }
 
-    fn matches_node(
-        node: &TreeNode,
-        attribute_name: Option<&str>,
-        search_type: TextSearchType,
-        search_string: &str,
-        case_sensitive: bool,
-    ) -> bool {
-        let query = if case_sensitive {
-            search_string.to_string()
-        } else {
-            search_string.to_lowercase()
-        };
-
-        if let Some(attr_name) = attribute_name {
-            if let Some(value) = node.get_attribute(attr_name) {
-                return Self::matches_text(value, &query, search_type, case_sensitive);
-            }
-        } else {
-            // Search all attributes
-            for value in node.attributes.values() {
-                if Self::matches_text(value, &query, search_type, case_sensitive) {
-                    return true;
-                }
-            }
-        }
-
-        false
-    }
-
-    fn matches_numeric(
-        node: &TreeNode,
-        attribute_name: &str,
-        search_type: NumberSearchType,
-        search_value: f64,
-    ) -> bool {
-        let value = if attribute_name == "!length" {
-            node.length
-        } else if attribute_name == "!height" {
-            // TODO: Calculate node height
-            None
-        } else {
-            node.get_numeric_attribute(attribute_name)
-        };
-
-        if let Some(val) = value {
-            match search_type {
-                NumberSearchType::Equals => val == search_value,
-                NumberSearchType::NotEquals => val != search_value,
-                NumberSearchType::GreaterThan => val > search_value,
-                NumberSearchType::EqualsOrGreaterThan => val >= search_value,
-                NumberSearchType::LessThan => val < search_value,
-                NumberSearchType::EqualsOrLessThan => val <= search_value,
-            }
-        } else {
-            false
-        }
-    }
-
     fn matches_text(
         text: &str,
         query: &str,
@@ -872,10 +685,4 @@ impl TreeViewer {
         }
     }
 
-    /// Clear the saved unordered tree state
-    pub fn clear_unordered_tree(&mut self) {
-        if self.current_tree_index < self.unordered_trees.len() {
-            self.unordered_trees[self.current_tree_index] = None;
-        }
-    }
 }

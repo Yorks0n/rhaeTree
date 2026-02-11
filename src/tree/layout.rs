@@ -125,7 +125,7 @@ impl TreeLayout {
         tree: &Tree,
         show_tip_labels: bool,
         tip_label_font_size: f32,
-        tip_label_font_family: FontFamily,
+        _tip_label_font_family: FontFamily,
     ) -> Self {
         if !show_tip_labels {
             return self;
