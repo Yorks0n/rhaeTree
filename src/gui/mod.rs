@@ -4045,13 +4045,7 @@ impl eframe::App for FigTreeGui {
                     let maybe_tree = self.tree_viewer.current_tree();
 
                     let mut available_fields: Vec<String> = maybe_tree
-                        .map(|tree| {
-                            let mut fields = tree.node_numeric_range_keys();
-                            if fields.is_empty() {
-                                fields = tree.node_numeric_attribute_keys();
-                            }
-                            fields
-                        })
+                        .map(|tree| tree.node_numeric_range_keys())
                         .unwrap_or_default();
                     available_fields.sort();
                     available_fields.dedup();
@@ -4062,7 +4056,7 @@ impl eframe::App for FigTreeGui {
                     }
 
                     if available_fields.is_empty() {
-                        ui.label("No numeric annotations found in this tree.");
+                        ui.label("No numeric range annotations found in this tree.");
                     } else {
                         let mut selection = self
                             .tree_painter

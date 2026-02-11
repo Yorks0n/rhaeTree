@@ -184,6 +184,18 @@ pub struct TreePainter {
     highlighted_clades: HashMap<NodeId, Color32>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NodeBarAxisMapping {
+    Direct,
+    Reversed,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NodeBarValueMapper {
+    mapping: NodeBarAxisMapping,
+    layout_width: f32,
+}
+
 impl Default for TreePainter {
     fn default() -> Self {
         Self {
@@ -398,6 +410,130 @@ impl TreePainter {
 
     pub fn node_bar_thickness(&self) -> f32 {
         self.node_bar_thickness
+    }
+
+    pub(crate) fn infer_node_bar_mapper(
+        &self,
+        tree: &Tree,
+        layout: &TreeLayout,
+        field: &str,
+    ) -> NodeBarValueMapper {
+        let layout_width = layout.width.max(1e-6);
+        let mut samples: Vec<(f32, f32, f32)> = Vec::new();
+        let mut global_min = f32::INFINITY;
+        let mut global_max = f32::NEG_INFINITY;
+
+        for node in &tree.nodes {
+            let Some((mut min, mut max)) = node.numeric_range_attribute(field) else {
+                continue;
+            };
+            if !min.is_finite() || !max.is_finite() {
+                continue;
+            }
+            if min > max {
+                std::mem::swap(&mut min, &mut max);
+            }
+
+            let min = min as f32;
+            let max = max as f32;
+            let node_x = layout.positions[node.id].0;
+            if !min.is_finite() || !max.is_finite() || !node_x.is_finite() {
+                continue;
+            }
+
+            global_min = global_min.min(min);
+            global_max = global_max.max(max);
+            samples.push((node_x, min, max));
+        }
+
+        if samples.is_empty() {
+            return NodeBarValueMapper {
+                mapping: NodeBarAxisMapping::Direct,
+                layout_width,
+            };
+        }
+
+        let value_span = (global_max - global_min).abs().max(1e-6);
+        let candidates = [NodeBarAxisMapping::Direct, NodeBarAxisMapping::Reversed];
+
+        let mut best = NodeBarAxisMapping::Direct;
+        let mut best_score = f32::INFINITY;
+
+        for candidate in candidates {
+            let score = Self::node_bar_mapping_score(
+                candidate,
+                &samples,
+                layout_width,
+                global_min,
+                value_span,
+            );
+            if score < best_score {
+                best_score = score;
+                best = candidate;
+            }
+        }
+
+        NodeBarValueMapper {
+            mapping: best,
+            layout_width,
+        }
+    }
+
+    pub(crate) fn map_node_bar_interval(
+        &self,
+        mapper: NodeBarValueMapper,
+        mut min: f64,
+        mut max: f64,
+    ) -> Option<(f32, f32)> {
+        if !min.is_finite() || !max.is_finite() {
+            return None;
+        }
+        if min > max {
+            std::mem::swap(&mut min, &mut max);
+        }
+
+        let a = Self::map_node_bar_value(mapper, min as f32);
+        let b = Self::map_node_bar_value(mapper, max as f32);
+        let left = a.min(b);
+        let right = a.max(b);
+        Some((left, right.max(left + 1e-3)))
+    }
+
+    fn node_bar_mapping_score(
+        mapping: NodeBarAxisMapping,
+        samples: &[(f32, f32, f32)],
+        layout_width: f32,
+        _value_min: f32,
+        _value_span: f32,
+    ) -> f32 {
+        let mapper = NodeBarValueMapper {
+            mapping,
+            layout_width,
+        };
+
+        let mut total = 0.0f32;
+        for (node_x, min, max) in samples {
+            let a = Self::map_node_bar_value(mapper, *min);
+            let b = Self::map_node_bar_value(mapper, *max);
+            let left = a.min(b).clamp(0.0, layout_width);
+            let right = a.max(b).clamp(0.0, layout_width);
+            let dist = if *node_x < left {
+                left - *node_x
+            } else if *node_x > right {
+                *node_x - right
+            } else {
+                0.0
+            };
+            total += dist;
+        }
+        total / samples.len() as f32
+    }
+
+    fn map_node_bar_value(mapper: NodeBarValueMapper, value: f32) -> f32 {
+        match mapper.mapping {
+            NodeBarAxisMapping::Direct => value,
+            NodeBarAxisMapping::Reversed => mapper.layout_width - value,
+        }
     }
 
     pub fn branch_color_override(&self, node_id: NodeId) -> Option<Color32> {
@@ -1516,6 +1652,7 @@ impl TreePainter {
             | TreeLayoutType::Phylogram
             | TreeLayoutType::Slanted
             | TreeLayoutType::Daylight => {
+                let mapper = self.infer_node_bar_mapper(tree, layout, field);
                 for node in &tree.nodes {
                     let Some((mut min, mut max)) = node.numeric_range_attribute(field) else {
                         continue;
@@ -1530,8 +1667,16 @@ impl TreePainter {
                     }
 
                     let y_world = layout.positions[node.id].1;
-                    let start = to_screen((min as f32, y_world));
-                    let end = to_screen((max as f32, y_world));
+                    let Some((x0, x1)) = self.map_node_bar_interval(mapper, min, max) else {
+                        continue;
+                    };
+                    // Keep bar midpoint anchored to the corresponding node position.
+                    let node_x = layout.positions[node.id].0;
+                    let half_width = ((x1 - x0).abs() * 0.5).max(0.5);
+                    let x0 = node_x - half_width;
+                    let x1 = node_x + half_width;
+                    let start = to_screen((x0, y_world));
+                    let end = to_screen((x1, y_world));
 
                     let mut left = start.x.min(end.x);
                     let mut right = start.x.max(end.x);

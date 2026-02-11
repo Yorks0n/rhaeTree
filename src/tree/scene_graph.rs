@@ -288,6 +288,7 @@ pub fn build_tree_scene(
                     | TreeLayoutType::Slanted
                     | TreeLayoutType::Daylight
             ) {
+                let mapper = painter.infer_node_bar_mapper(tree, layout, field);
                 for node in &tree.nodes {
                     let Some((mut min, mut max)) = node.numeric_range_attribute(field) else {
                         continue;
@@ -296,8 +297,16 @@ pub fn build_tree_scene(
                         std::mem::swap(&mut min, &mut max);
                     }
                     let y = layout.positions[node.id].1;
-                    let p0 = to_local(to_screen((min as f32, y)));
-                    let p1 = to_local(to_screen((max as f32, y)));
+                    let Some((x0, x1)) = painter.map_node_bar_interval(mapper, min, max) else {
+                        continue;
+                    };
+                    // Keep bar midpoint anchored to the corresponding node position.
+                    let node_x = layout.positions[node.id].0;
+                    let half_width = ((x1 - x0).abs() * 0.5).max(0.5);
+                    let x0 = node_x - half_width;
+                    let x1 = node_x + half_width;
+                    let p0 = to_local(to_screen((x0, y)));
+                    let p1 = to_local(to_screen((x1, y)));
                     let left = p0.x.min(p1.x);
                     let right = p0.x.max(p1.x).max(left + 1.0);
                     let yc = (p0.y + p1.y) * 0.5;
