@@ -615,4 +615,5 @@ impl TreeBundle {
 pub enum TreeFileFormat {
     Newick,
     Nexus,
+    Rtr,
 }

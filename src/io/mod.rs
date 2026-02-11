@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -10,20 +11,32 @@ pub fn load_trees(path: &Path) -> Result<TreeBundle> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read tree file: {}", path.display()))?;
 
-    let format = detect_format(&raw);
-    let trees = match format {
-        TreeFileFormat::Newick => parse_newick(&raw)?,
-        TreeFileFormat::Nexus => parse_nexus(&raw)?,
+    let format = detect_format(path, &raw);
+    let (trees, metadata) = match format {
+        TreeFileFormat::Newick => (parse_newick(&raw)?, BTreeMap::new()),
+        TreeFileFormat::Nexus => (parse_nexus(&raw)?, BTreeMap::new()),
+        TreeFileFormat::Rtr => parse_rtr(&raw)?,
     };
 
     if trees.is_empty() {
         bail!("tree file did not contain any trees");
     }
 
-    Ok(TreeBundle::new(format, trees))
+    let mut bundle = TreeBundle::new(format, trees);
+    bundle.metadata = metadata;
+    Ok(bundle)
 }
 
-fn detect_format(raw: &str) -> TreeFileFormat {
+fn detect_format(path: &Path, raw: &str) -> TreeFileFormat {
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("rtr"))
+        .unwrap_or(false)
+    {
+        return TreeFileFormat::Rtr;
+    }
+
     // Check first non-empty, non-comment line
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -51,6 +64,9 @@ fn detect_format(raw: &str) -> TreeFileFormat {
 
         // Additional Nexus indicators
         let upper = trimmed.to_ascii_uppercase();
+        if upper.starts_with("BEGIN FIGTREE_RUST") {
+            return TreeFileFormat::Rtr;
+        }
         if upper.starts_with("BEGIN ") || upper.starts_with("TREE ") {
             return TreeFileFormat::Nexus;
         }
@@ -84,36 +100,18 @@ fn parse_newick(raw: &str) -> Result<Vec<Tree>> {
 fn parse_nexus(raw: &str) -> Result<Vec<Tree>> {
     let mut trees = Vec::new();
     let mut in_trees_block = false;
-    let mut current_tree_lines = Vec::new();
+    let mut in_translate_block = false;
+    let mut current_tree = String::new();
 
     for line in raw.lines() {
         let trimmed = line.trim();
 
-        // Skip empty lines and comments
+        // Skip empty lines
         if trimmed.is_empty() {
             continue;
         }
 
-        // Handle comments (can be anywhere in the line)
-        let line_without_comment = if let Some(comment_start) = trimmed.find('[') {
-            if let Some(comment_end) = trimmed[comment_start..].find(']') {
-                // Remove inline comment
-                let before = &trimmed[..comment_start];
-                let after = &trimmed[comment_start + comment_end + 1..];
-                format!("{}{}", before, after).trim().to_string()
-            } else {
-                // Comment continues to next line, skip rest of line
-                trimmed[..comment_start].trim().to_string()
-            }
-        } else {
-            trimmed.to_string()
-        };
-
-        if line_without_comment.is_empty() {
-            continue;
-        }
-
-        let upper_line = line_without_comment.to_ascii_uppercase();
+        let upper_line = trimmed.to_ascii_uppercase();
 
         // Check for TREES block start
         if upper_line.starts_with("BEGIN TREES") {
@@ -124,81 +122,62 @@ fn parse_nexus(raw: &str) -> Result<Vec<Tree>> {
         // Check for block end
         if upper_line.starts_with("END") || upper_line.starts_with("ENDBLOCK") {
             in_trees_block = false;
+            in_translate_block = false;
 
-            // Process any accumulated tree lines
-            if !current_tree_lines.is_empty() {
-                let full_tree_line = current_tree_lines.join(" ");
-                if let Ok((label, newick)) = parse_nexus_tree_line(&full_tree_line) {
+            // Process any accumulated tree definition.
+            if !current_tree.is_empty() {
+                if let Ok((label, newick)) = parse_nexus_tree_line(&current_tree) {
                     let index = trees.len();
                     if let Ok(tree) = build_tree(index, label, newick) {
                         trees.push(tree);
                     }
                 }
-                current_tree_lines.clear();
+                current_tree.clear();
             }
             continue;
         }
 
         // Process lines within TREES block
         if in_trees_block {
-            let lower_line = line_without_comment.to_ascii_lowercase();
+            let lower_line = trimmed.to_ascii_lowercase();
 
             // Handle TRANSLATE command (often present in BEAST/MrBayes output)
-            if lower_line.starts_with("translate") {
-                // Skip translate block for now - phylotree should handle taxon names
+            if in_translate_block || lower_line.starts_with("translate") {
+                in_translate_block = !statement_complete(trimmed);
                 continue;
             }
 
-            // Handle tree definitions
-            if lower_line.starts_with("tree ") || lower_line.starts_with("utree ") {
-                // If we have a previous tree being accumulated, process it first
-                if !current_tree_lines.is_empty() {
-                    let full_tree_line = current_tree_lines.join(" ");
-                    if let Ok((label, newick)) = parse_nexus_tree_line(&full_tree_line) {
-                        let index = trees.len();
-                        if let Ok(tree) = build_tree(index, label, newick) {
-                            trees.push(tree);
-                        }
-                    }
-                    current_tree_lines.clear();
+            if current_tree.is_empty() {
+                // Ignore non-tree lines and standalone comments.
+                if lower_line.starts_with('[') {
+                    continue;
                 }
-
-                // Start accumulating new tree
-                current_tree_lines.push(line_without_comment.clone());
-
-                // Check if this line contains a complete tree (ends with semicolon)
-                if line_without_comment.ends_with(';') {
-                    let full_tree_line = current_tree_lines.join(" ");
-                    if let Ok((label, newick)) = parse_nexus_tree_line(&full_tree_line) {
-                        let index = trees.len();
-                        if let Ok(tree) = build_tree(index, label, newick) {
-                            trees.push(tree);
-                        }
-                    }
-                    current_tree_lines.clear();
+                if !(lower_line.starts_with("tree ") || lower_line.starts_with("utree ")) {
+                    continue;
                 }
-            } else if !current_tree_lines.is_empty() {
-                // Continue accumulating multi-line tree definition
-                current_tree_lines.push(line_without_comment.clone());
+            }
 
-                if line_without_comment.ends_with(';') {
-                    let full_tree_line = current_tree_lines.join(" ");
-                    if let Ok((label, newick)) = parse_nexus_tree_line(&full_tree_line) {
-                        let index = trees.len();
-                        if let Ok(tree) = build_tree(index, label, newick) {
-                            trees.push(tree);
-                        }
+            if !current_tree.is_empty() {
+                current_tree.push(' ');
+            }
+            current_tree.push_str(trimmed);
+
+            if statement_complete(&current_tree) {
+                let statement = statement_prefix_until_semicolon(&current_tree);
+                if let Ok((label, newick)) = parse_nexus_tree_line(statement) {
+                    let index = trees.len();
+                    if let Ok(tree) = build_tree(index, label, newick) {
+                        trees.push(tree);
                     }
-                    current_tree_lines.clear();
                 }
+                current_tree.clear();
             }
         }
     }
 
-    // Handle any remaining tree lines
-    if !current_tree_lines.is_empty() {
-        let full_tree_line = current_tree_lines.join(" ");
-        if let Ok((label, newick)) = parse_nexus_tree_line(&full_tree_line) {
+    // Handle any remaining tree lines.
+    if !current_tree.is_empty() {
+        if let Ok((label, newick)) = parse_nexus_tree_line(&current_tree) {
             let index = trees.len();
             if let Ok(tree) = build_tree(index, label, newick) {
                 trees.push(tree);
@@ -209,14 +188,225 @@ fn parse_nexus(raw: &str) -> Result<Vec<Tree>> {
     Ok(trees)
 }
 
-fn build_tree(index: usize, label: Option<String>, newick: String) -> Result<Tree> {
-    let phylo = PhyloTree::from_newick(&newick)
-        .map_err(|err| anyhow!("failed to parse newick tree: {err}"))?;
-    let canonical_newick = phylo
-        .to_formatted_newick(NewickFormat::NoComments)
-        .unwrap_or_else(|_| newick.clone());
+fn parse_rtr(raw: &str) -> Result<(Vec<Tree>, BTreeMap<String, String>)> {
+    let trees = parse_nexus(raw)?;
+    let metadata = parse_rtr_settings_block(raw);
+    Ok((trees, metadata))
+}
 
-    Ok(Tree::new(index, label, canonical_newick, phylo))
+fn parse_rtr_settings_block(raw: &str) -> BTreeMap<String, String> {
+    let mut settings = BTreeMap::new();
+    let mut in_block = false;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let upper = trimmed.to_ascii_uppercase();
+        if upper.starts_with("BEGIN FIGTREE_RUST") {
+            in_block = true;
+            continue;
+        }
+        if in_block && (upper.starts_with("END") || upper.starts_with("ENDBLOCK")) {
+            break;
+        }
+        if !in_block {
+            continue;
+        }
+
+        if !trimmed.to_ascii_lowercase().starts_with("set ") {
+            continue;
+        }
+
+        let body = trimmed[4..].trim().trim_end_matches(';').trim();
+        let mut parts = body.splitn(2, '=');
+        let Some(key) = parts.next().map(str::trim) else {
+            continue;
+        };
+        let Some(value) = parts.next().map(str::trim) else {
+            continue;
+        };
+        let value = value.trim_matches('"').trim_matches('\'').to_string();
+        if !key.is_empty() {
+            settings.insert(key.to_string(), value);
+        }
+    }
+
+    settings
+}
+
+pub fn save_rtr(
+    path: &Path,
+    trees: &[Tree],
+    settings: &BTreeMap<String, String>,
+) -> Result<()> {
+    if trees.is_empty() {
+        bail!("no trees to export");
+    }
+
+    let mut out = String::new();
+    out.push_str("#NEXUS\n");
+
+    let taxa = taxa_labels_from_tree(&trees[0]);
+    out.push_str("begin taxa;\n");
+    out.push_str(&format!("\tdimensions ntax={};\n", taxa.len()));
+    out.push_str("\ttaxlabels\n");
+    for label in taxa {
+        out.push_str("\t");
+        out.push_str(&quote_taxon_label(&label));
+        out.push('\n');
+    }
+    out.push_str("\t;\n");
+    out.push_str("end;\n\n");
+
+    out.push_str("begin trees;\n");
+    for (i, tree) in trees.iter().enumerate() {
+        let tree_name = tree
+            .label
+            .clone()
+            .unwrap_or_else(|| format!("tree_{}", i + 1));
+        let mut newick = tree.newick.trim().to_string();
+        if !newick.ends_with(';') {
+            newick.push(';');
+        }
+        out.push_str(&format!(
+            "\ttree {} = [&R] {}\n",
+            quote_taxon_label(&tree_name),
+            newick
+        ));
+    }
+    out.push_str("end;\n\n");
+
+    out.push_str("begin figtree_rust;\n");
+    out.push_str("\tset rtr.version=\"1\";\n");
+    for (key, value) in settings {
+        out.push_str(&format!("\tset {}={};\n", key, format_setting_value(value)));
+    }
+    out.push_str("end;\n");
+
+    fs::write(path, out).with_context(|| format!("failed to write RTR file: {}", path.display()))
+}
+
+fn taxa_labels_from_tree(tree: &Tree) -> Vec<String> {
+    tree.nodes
+        .iter()
+        .filter(|n| n.is_leaf())
+        .map(|n| {
+            n.name
+                .clone()
+                .or_else(|| n.label.clone())
+                .unwrap_or_else(|| format!("tip_{}", n.id))
+        })
+        .collect()
+}
+
+fn quote_taxon_label(label: &str) -> String {
+    if label.is_empty() {
+        return "''".to_string();
+    }
+    let needs_quote = label.chars().any(|c| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '(' | ')' | '[' | ']' | '{' | '}' | ':' | ';' | ',' | '\'' | '"' | '='
+            )
+    });
+    if needs_quote {
+        format!("'{}'", label.replace('\'', "''"))
+    } else {
+        label.to_string()
+    }
+}
+
+fn format_setting_value(value: &str) -> String {
+    if value.eq_ignore_ascii_case("true")
+        || value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("null")
+        || value.parse::<f64>().is_ok()
+        || value.starts_with('#')
+    {
+        value.to_string()
+    } else {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    }
+}
+
+fn build_tree(index: usize, label: Option<String>, newick: String) -> Result<Tree> {
+    match parse_phylo_with_fallback(&newick) {
+        Ok((phylo, canonical_newick)) => Ok(Tree::new(index, label, canonical_newick, phylo)),
+        Err(err) => Err(anyhow!("failed to parse newick tree: {err}")),
+    }
+}
+
+fn parse_phylo_with_fallback(newick: &str) -> Result<(PhyloTree, String)> {
+    if let Ok(phylo) = PhyloTree::from_newick(newick) {
+        let canonical_newick = phylo
+            .to_formatted_newick(NewickFormat::NoComments)
+            .unwrap_or_else(|_| newick.to_string());
+        return Ok((phylo, canonical_newick));
+    }
+
+    // Compatibility fallback for legacy FigTree-style nested label annotations:
+    // [&label="[&label=0.98]"] -> [&label=0.98]
+    let sanitized = sanitize_nested_label_annotations(newick);
+    if sanitized != newick {
+        let phylo = PhyloTree::from_newick(&sanitized)
+            .map_err(|err| anyhow!("failed to parse sanitized newick tree: {err}"))?;
+        let canonical_newick = phylo
+            .to_formatted_newick(NewickFormat::NoComments)
+            .unwrap_or(sanitized);
+        return Ok((phylo, canonical_newick));
+    }
+
+    PhyloTree::from_newick(newick)
+        .map(|phylo| {
+            let canonical_newick = phylo
+                .to_formatted_newick(NewickFormat::NoComments)
+                .unwrap_or_else(|_| newick.to_string());
+            (phylo, canonical_newick)
+        })
+        .map_err(|err| anyhow!("{err}"))
+}
+
+fn sanitize_nested_label_annotations(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < s.len() {
+        let rem = &s[i..];
+        if rem.starts_with('[') {
+            if let Some(end_rel) = matching_bracket_end(rem) {
+                let comment = &rem[..end_rel];
+                if let Some(value) = extract_nested_label_value(comment) {
+                    out.push_str("[&label=");
+                    out.push_str(value);
+                    out.push(']');
+                } else {
+                    out.push_str(comment);
+                }
+                i += end_rel;
+                continue;
+            }
+        }
+        let ch = rem.chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn extract_nested_label_value(comment: &str) -> Option<&str> {
+    let prefix = "[&label=\"[&label=";
+    let suffix = "]\"]";
+    if comment.starts_with(prefix) && comment.ends_with(suffix) {
+        let start = prefix.len();
+        let end = comment.len().saturating_sub(suffix.len());
+        if start < end {
+            return Some(&comment[start..end]);
+        }
+    }
+    None
 }
 
 fn parse_nexus_tree_line(line: &str) -> Result<(Option<String>, String)> {
@@ -258,13 +448,16 @@ fn parse_nexus_tree_line(line: &str) -> Result<(Option<String>, String)> {
     // Process tree definition
     let mut payload = tree_part.trim();
 
-    // Remove trailing semicolon if present
-    payload = payload.trim_end_matches(';').trim();
+    // Truncate at the first true statement terminator.
+    if let Some(idx) = first_statement_semicolon(payload) {
+        payload = &payload[..idx];
+    }
+    payload = payload.trim();
 
     // Handle BEAST/FigTree annotations [&R] or other metadata
     while payload.starts_with('[') {
-        if let Some(end_idx) = payload.find(']') {
-            payload = payload[end_idx + 1..].trim();
+        if let Some(end_idx) = matching_bracket_end(payload) {
+            payload = payload[end_idx..].trim_start();
         } else {
             break;
         }
@@ -274,6 +467,70 @@ fn parse_nexus_tree_line(line: &str) -> Result<(Option<String>, String)> {
     let newick = normalise_newick(payload);
 
     Ok((label, newick))
+}
+
+fn statement_complete(s: &str) -> bool {
+    first_statement_semicolon(s).is_some()
+}
+
+fn statement_prefix_until_semicolon(s: &str) -> &str {
+    if let Some(idx) = first_statement_semicolon(s) {
+        &s[..=idx]
+    } else {
+        s
+    }
+}
+
+fn first_statement_semicolon(s: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut bracket_depth = 0usize;
+    let mut prev = '\0';
+    for (i, ch) in s.char_indices() {
+        if ch == '\'' && !in_double && prev != '\\' {
+            in_single = !in_single;
+        } else if ch == '"' && !in_single && prev != '\\' {
+            in_double = !in_double;
+        } else if !in_single && !in_double {
+            if ch == '[' {
+                bracket_depth = bracket_depth.saturating_add(1);
+            } else if ch == ']' {
+                bracket_depth = bracket_depth.saturating_sub(1);
+            } else if ch == ';' && bracket_depth == 0 {
+                return Some(i);
+            }
+        }
+        prev = ch;
+    }
+    None
+}
+
+fn matching_bracket_end(s: &str) -> Option<usize> {
+    if !s.starts_with('[') {
+        return None;
+    }
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut depth = 0usize;
+    let mut prev = '\0';
+    for (i, ch) in s.char_indices() {
+        if ch == '\'' && !in_double && prev != '\\' {
+            in_single = !in_single;
+        } else if ch == '"' && !in_single && prev != '\\' {
+            in_double = !in_double;
+        } else if !in_single && !in_double {
+            if ch == '[' {
+                depth += 1;
+            } else if ch == ']' {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(i + ch.len_utf8());
+                }
+            }
+        }
+        prev = ch;
+    }
+    None
 }
 
 // Helper function to process annotations within the Newick string
@@ -286,13 +543,30 @@ fn normalise_newick(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn detects_format_correctly() {
-        assert_eq!(detect_format("#NEXUS\nBEGIN TREES;"), TreeFileFormat::Nexus);
-        assert_eq!(detect_format("(A:0.1,B:0.2);"), TreeFileFormat::Newick);
-        assert_eq!(detect_format("   #nexus   \n"), TreeFileFormat::Nexus);
-        assert_eq!(detect_format("[comment]\n(A,B);"), TreeFileFormat::Newick);
+        assert_eq!(
+            detect_format(Path::new("x.nex"), "#NEXUS\nBEGIN TREES;"),
+            TreeFileFormat::Nexus
+        );
+        assert_eq!(
+            detect_format(Path::new("x.tre"), "(A:0.1,B:0.2);"),
+            TreeFileFormat::Newick
+        );
+        assert_eq!(
+            detect_format(Path::new("x.nex"), "   #nexus   \n"),
+            TreeFileFormat::Nexus
+        );
+        assert_eq!(
+            detect_format(Path::new("x.tre"), "[comment]\n(A,B);"),
+            TreeFileFormat::Newick
+        );
+        assert_eq!(
+            detect_format(Path::new("x.rtr"), "#NEXUS\nBEGIN TREES;"),
+            TreeFileFormat::Rtr
+        );
     }
 
     #[test]
@@ -416,5 +690,36 @@ END;";
         assert_eq!(trees.len(), 2);
         assert_eq!(trees[0].label.as_deref(), Some("my tree"));
         assert_eq!(trees[1].label.as_deref(), Some("another tree"));
+    }
+
+    #[test]
+    fn parses_rtr_settings_block() {
+        let input = "#NEXUS
+BEGIN TREES;
+    TREE tree1 = (A:0.1,B:0.2);
+END;
+BEGIN FIGTREE_RUST;
+    set layout.type=\"radial\";
+    set painter.branchLineWidth=2.5;
+END;";
+        let (trees, metadata) = parse_rtr(input).unwrap();
+        assert_eq!(trees.len(), 1);
+        assert_eq!(metadata.get("layout.type").map(String::as_str), Some("radial"));
+        assert_eq!(
+            metadata.get("painter.branchLineWidth").map(String::as_str),
+            Some("2.5")
+        );
+    }
+
+    #[test]
+    fn parses_nexus_with_nested_bracket_in_label_annotation() {
+        let input = "#NEXUS
+BEGIN TREES;
+    tree tree_1 = [&R] ((A:0.1,B:0.2)[&label=\"[&label=0.98]\"]:0.3,C:0.4);
+END;";
+        let trees = parse_nexus(input).unwrap();
+        assert_eq!(trees.len(), 1);
+        assert_eq!(trees[0].label.as_deref(), Some("tree_1"));
+        assert_eq!(trees[0].leaf_count(), 3);
     }
 }

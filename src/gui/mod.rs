@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 use std::{
+    collections::BTreeMap,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
 };
@@ -16,7 +17,7 @@ use crate::tree::painter::{TipLabelDisplay, TipLabelFontFamily, TipLabelNumberFo
 use crate::tree::skia_renderer::SkiaTreeRenderer;
 use crate::tree::vello_renderer::VelloTreeRenderer;
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
-use crate::tree::{NodeId, Tree, TreeBundle};
+use crate::tree::{NodeId, Tree, TreeBundle, TreeFileFormat};
 use crate::ui;
 
 pub struct FigTreeGui {
@@ -61,6 +62,7 @@ pub struct FigTreeGui {
     transform_branches_enabled: bool,
     branch_transform: BranchTransform,
     pending_export_path: Option<(PathBuf, crate::app::ExportFormat)>,
+    rtr_save_path: Option<PathBuf>,
     tree_canvas_rect: Option<egui::Rect>,
     tree_texture: Option<egui::TextureHandle>,
     tree_render_signature: Option<u64>,
@@ -235,6 +237,203 @@ fn parse_hex_color(input: &str) -> Option<Color32> {
     None
 }
 
+fn parse_hex_color_alpha(input: &str) -> Option<Color32> {
+    let digits = input.trim().trim_start_matches('#');
+    if digits.len() == 6 {
+        return parse_hex_color(digits);
+    }
+    if digits.len() == 8 {
+        if let Ok(value) = u32::from_str_radix(digits, 16) {
+            return Some(Color32::from_rgba_unmultiplied(
+                ((value >> 24) & 0xFF) as u8,
+                ((value >> 16) & 0xFF) as u8,
+                ((value >> 8) & 0xFF) as u8,
+                (value & 0xFF) as u8,
+            ));
+        }
+    }
+    None
+}
+
+fn color_to_hex_rgba(color: Color32) -> String {
+    format!("#{:02X}{:02X}{:02X}{:02X}", color.r(), color.g(), color.b(), color.a())
+}
+
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn apply_bool_setting(settings: &BTreeMap<String, String>, key: &str, target: &mut bool) {
+    if let Some(v) = settings.get(key).and_then(|s| parse_bool(s)) {
+        *target = v;
+    }
+}
+
+fn apply_color_setting(settings: &BTreeMap<String, String>, key: &str, target: &mut Color32) {
+    if let Some(v) = settings.get(key).and_then(|s| parse_hex_color_alpha(s)) {
+        *target = v;
+    }
+}
+
+fn layout_type_name(value: crate::tree::layout::TreeLayoutType) -> &'static str {
+    match value {
+        crate::tree::layout::TreeLayoutType::Rectangular => "rectangular",
+        crate::tree::layout::TreeLayoutType::Circular => "circular",
+        crate::tree::layout::TreeLayoutType::Radial => "radial",
+        crate::tree::layout::TreeLayoutType::Slanted => "slanted",
+        crate::tree::layout::TreeLayoutType::Cladogram => "cladogram",
+        crate::tree::layout::TreeLayoutType::Phylogram => "phylogram",
+        crate::tree::layout::TreeLayoutType::Daylight => "daylight",
+    }
+}
+
+fn parse_layout_type(s: &str) -> Option<crate::tree::layout::TreeLayoutType> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "rectangular" => Some(crate::tree::layout::TreeLayoutType::Rectangular),
+        "circular" => Some(crate::tree::layout::TreeLayoutType::Circular),
+        "radial" => Some(crate::tree::layout::TreeLayoutType::Radial),
+        "slanted" => Some(crate::tree::layout::TreeLayoutType::Slanted),
+        "cladogram" => Some(crate::tree::layout::TreeLayoutType::Cladogram),
+        "phylogram" => Some(crate::tree::layout::TreeLayoutType::Phylogram),
+        "daylight" => Some(crate::tree::layout::TreeLayoutType::Daylight),
+        _ => None,
+    }
+}
+
+fn selection_mode_name(value: SelectionMode) -> &'static str {
+    match value {
+        SelectionMode::Clade => "clade",
+        SelectionMode::Nodes => "nodes",
+        SelectionMode::Tips => "tips",
+        SelectionMode::Taxa => "taxa",
+    }
+}
+
+fn parse_selection_mode(s: &str) -> Option<SelectionMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "clade" => Some(SelectionMode::Clade),
+        "nodes" => Some(SelectionMode::Nodes),
+        "tips" => Some(SelectionMode::Tips),
+        "taxa" => Some(SelectionMode::Taxa),
+        _ => None,
+    }
+}
+
+fn render_backend_name(value: RenderBackend) -> &'static str {
+    match value {
+        RenderBackend::Skia => "skia",
+        RenderBackend::Vello => "vello",
+    }
+}
+
+fn parse_render_backend(s: &str) -> Option<RenderBackend> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "skia" => Some(RenderBackend::Skia),
+        "vello" => Some(RenderBackend::Vello),
+        _ => None,
+    }
+}
+
+fn root_method_name(value: RootMethod) -> &'static str {
+    match value {
+        RootMethod::UserSelection => "user_selection",
+        RootMethod::Midpoint => "midpoint",
+    }
+}
+
+fn parse_root_method(s: &str) -> Option<RootMethod> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "user_selection" => Some(RootMethod::UserSelection),
+        "midpoint" => Some(RootMethod::Midpoint),
+        _ => None,
+    }
+}
+
+fn node_ordering_name(value: NodeOrdering) -> &'static str {
+    match value {
+        NodeOrdering::Increasing => "increasing",
+        NodeOrdering::Decreasing => "decreasing",
+    }
+}
+
+fn parse_node_ordering(s: &str) -> Option<NodeOrdering> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "increasing" => Some(NodeOrdering::Increasing),
+        "decreasing" => Some(NodeOrdering::Decreasing),
+        _ => None,
+    }
+}
+
+fn branch_transform_name(value: BranchTransform) -> &'static str {
+    match value {
+        BranchTransform::Equal => "equal",
+        BranchTransform::Cladogram => "cladogram",
+        BranchTransform::Proportional => "proportional",
+    }
+}
+
+fn parse_branch_transform(s: &str) -> Option<BranchTransform> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "equal" => Some(BranchTransform::Equal),
+        "cladogram" => Some(BranchTransform::Cladogram),
+        "proportional" => Some(BranchTransform::Proportional),
+        _ => None,
+    }
+}
+
+fn tip_label_display_name(value: TipLabelDisplay) -> &'static str {
+    match value {
+        TipLabelDisplay::Names => "names",
+        TipLabelDisplay::Labels => "labels",
+        TipLabelDisplay::BranchLength => "branch_length",
+    }
+}
+
+fn parse_tip_label_display(s: &str) -> Option<TipLabelDisplay> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "names" => Some(TipLabelDisplay::Names),
+        "labels" => Some(TipLabelDisplay::Labels),
+        "branch_length" => Some(TipLabelDisplay::BranchLength),
+        _ => None,
+    }
+}
+
+fn tip_label_font_name(value: TipLabelFontFamily) -> &'static str {
+    match value {
+        TipLabelFontFamily::Proportional => "proportional",
+        TipLabelFontFamily::Monospace => "monospace",
+    }
+}
+
+fn parse_tip_label_font_family(s: &str) -> Option<TipLabelFontFamily> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "proportional" => Some(TipLabelFontFamily::Proportional),
+        "monospace" => Some(TipLabelFontFamily::Monospace),
+        _ => None,
+    }
+}
+
+fn tip_label_number_format_name(value: TipLabelNumberFormat) -> &'static str {
+    match value {
+        TipLabelNumberFormat::Decimal => "decimal",
+        TipLabelNumberFormat::Scientific => "scientific",
+        TipLabelNumberFormat::Percentage => "percentage",
+    }
+}
+
+fn parse_tip_label_number_format(s: &str) -> Option<TipLabelNumberFormat> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "decimal" => Some(TipLabelNumberFormat::Decimal),
+        "scientific" => Some(TipLabelNumberFormat::Scientific),
+        "percentage" => Some(TipLabelNumberFormat::Percentage),
+        _ => None,
+    }
+}
+
 impl FigTreeGui {
     const MAX_RENDER_TEXTURE_EDGE: f32 = 8192.0;
     const MAX_RENDER_PIXELS: f32 = 16_000_000.0;
@@ -294,6 +493,7 @@ impl FigTreeGui {
             transform_branches_enabled: false,
             branch_transform: BranchTransform::Proportional,
             pending_export_path: None,
+            rtr_save_path: None,
             tree_canvas_rect: None,
             tree_texture: None,
             tree_render_signature: None,
@@ -526,7 +726,20 @@ impl FigTreeGui {
                 self.undo_stack.clear();
                 self.redo_stack.clear();
                 self.config.tree_path = Some(path);
+                let rtr_metadata = if bundle.format == TreeFileFormat::Rtr {
+                    Some(bundle.metadata.clone())
+                } else {
+                    None
+                };
+                self.rtr_save_path = if bundle.format == TreeFileFormat::Rtr {
+                    self.config.tree_path.clone()
+                } else {
+                    None
+                };
                 self.bundle = Some(bundle);
+                if let Some(metadata) = rtr_metadata {
+                    self.apply_rtr_settings(&metadata);
+                }
                 if !self.filter_text.trim().is_empty() {
                     self.apply_filter();
                 }
@@ -550,7 +763,7 @@ impl FigTreeGui {
         if let Some(path) = FileDialog::new()
             .add_filter(
                 "Tree files",
-                &["tree", "tre", "trees", "nexus", "nex", "newick", "nwk"],
+                &["tree", "tre", "trees", "nexus", "nex", "newick", "nwk", "rtr"],
             )
             .pick_file()
         {
@@ -600,6 +813,454 @@ impl FigTreeGui {
             // For PDF, we export directly without screenshot
             self.export_vector_format(&path, ExportFormat::Pdf);
         }
+    }
+
+    fn save_rtr_as_dialog(&mut self) {
+        let default_name = self
+            .config
+            .tree_path
+            .as_ref()
+            .and_then(|p| p.file_stem().and_then(|s| s.to_str()))
+            .map(|stem| format!("{stem}.rtr"))
+            .unwrap_or_else(|| "tree.rtr".to_string());
+        if let Some(path) = FileDialog::new()
+            .add_filter("RTR Tree Session", &["rtr"])
+            .set_file_name(&default_name)
+            .save_file()
+        {
+            self.save_rtr_to_path(&path);
+            self.rtr_save_path = Some(path.clone());
+        }
+    }
+
+    fn save_rtr(&mut self) {
+        if let Some(path) = self.rtr_save_path.clone() {
+            self.save_rtr_to_path(&path);
+        } else {
+            self.save_rtr_as_dialog();
+        }
+    }
+
+    fn save_rtr_to_path(&mut self, path: &std::path::Path) {
+        let trees = self.tree_viewer.trees().to_vec();
+        if trees.is_empty() {
+            self.last_error = Some("No tree loaded".to_string());
+            return;
+        }
+
+        let settings = self.collect_rtr_settings();
+        match io::save_rtr(path, &trees, &settings) {
+            Ok(_) => {
+                self.status = format!("Successfully saved RTR to {}", path.display());
+                self.last_error = None;
+                self.rtr_save_path = Some(path.to_path_buf());
+            }
+            Err(e) => {
+                self.last_error = Some(format!("Failed to save RTR: {}", e));
+            }
+        }
+    }
+
+    fn collect_rtr_settings(&self) -> BTreeMap<String, String> {
+        let mut settings = BTreeMap::new();
+
+        settings.insert("layout.type".to_string(), layout_type_name(self.current_layout).to_string());
+        settings.insert("viewer.zoom".to_string(), format!("{:.6}", self.tree_viewer.zoom()));
+        settings.insert(
+            "viewer.verticalExpansion".to_string(),
+            format!("{:.6}", self.tree_viewer.vertical_expansion()),
+        );
+        settings.insert(
+            "viewer.selectionMode".to_string(),
+            selection_mode_name(self.tree_viewer.selection_mode()).to_string(),
+        );
+        settings.insert(
+            "render.backend".to_string(),
+            render_backend_name(self.render_backend).to_string(),
+        );
+
+        settings.insert("trees.rooting".to_string(), self.root_tree_enabled.to_string());
+        settings.insert(
+            "trees.rootingType".to_string(),
+            root_method_name(self.root_method).to_string(),
+        );
+        settings.insert("trees.order".to_string(), self.order_nodes_enabled.to_string());
+        settings.insert(
+            "trees.orderType".to_string(),
+            node_ordering_name(self.node_ordering).to_string(),
+        );
+        settings.insert(
+            "trees.transform".to_string(),
+            self.transform_branches_enabled.to_string(),
+        );
+        settings.insert(
+            "trees.transformType".to_string(),
+            branch_transform_name(self.branch_transform).to_string(),
+        );
+
+        settings.insert(
+            "painter.branchLineWidth".to_string(),
+            format!("{:.6}", self.tree_painter.branch_stroke.width),
+        );
+        settings.insert(
+            "painter.branchColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.branch_stroke.color),
+        );
+        settings.insert(
+            "painter.branchHighlightWidth".to_string(),
+            format!("{:.6}", self.tree_painter.branch_highlight_stroke.width),
+        );
+        settings.insert(
+            "painter.branchHighlightColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.branch_highlight_stroke.color),
+        );
+        settings.insert(
+            "painter.nodeRadius".to_string(),
+            format!("{:.6}", self.tree_painter.node_radius),
+        );
+        settings.insert(
+            "painter.leafColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.leaf_color),
+        );
+        settings.insert(
+            "painter.internalNodeColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.internal_node_color),
+        );
+        settings.insert(
+            "painter.selectedColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.selected_color),
+        );
+        settings.insert(
+            "painter.labelColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.label_color),
+        );
+        settings.insert(
+            "painter.branchLabelColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.branch_label_color),
+        );
+        settings.insert(
+            "painter.backgroundColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.background_color),
+        );
+        settings.insert(
+            "painter.canvasColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.canvas_color),
+        );
+        settings.insert(
+            "painter.highlightColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.highlight_color),
+        );
+        settings.insert(
+            "painter.tipSelectionColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.tip_selection_color),
+        );
+
+        settings.insert(
+            "painter.showTipLabels".to_string(),
+            self.tree_painter.show_tip_labels.to_string(),
+        );
+        settings.insert(
+            "painter.showNodeLabels".to_string(),
+            self.tree_painter.show_node_labels.to_string(),
+        );
+        settings.insert(
+            "painter.showBranchLabels".to_string(),
+            self.tree_painter.show_branch_labels.to_string(),
+        );
+        settings.insert(
+            "painter.showScaleBar".to_string(),
+            self.tree_painter.show_scale_bar.to_string(),
+        );
+        settings.insert(
+            "painter.showTipShapes".to_string(),
+            self.tree_painter.show_tip_shapes.to_string(),
+        );
+        settings.insert(
+            "painter.showNodeShapes".to_string(),
+            self.tree_painter.show_node_shapes.to_string(),
+        );
+        settings.insert(
+            "painter.showNodeBars".to_string(),
+            self.tree_painter.show_node_bars.to_string(),
+        );
+        settings.insert(
+            "painter.nodeBarField".to_string(),
+            self.tree_painter
+                .node_bar_field()
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+        );
+        settings.insert(
+            "painter.nodeBarColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.node_bar_color()),
+        );
+        settings.insert(
+            "painter.nodeBarThickness".to_string(),
+            format!("{:.6}", self.tree_painter.node_bar_thickness()),
+        );
+        settings.insert(
+            "painter.alignTipLabels".to_string(),
+            self.tree_painter.align_tip_labels.to_string(),
+        );
+        settings.insert(
+            "painter.tipLabelDisplay".to_string(),
+            tip_label_display_name(self.tree_painter.tip_label_display).to_string(),
+        );
+        settings.insert(
+            "painter.tipLabelFontFamily".to_string(),
+            tip_label_font_name(self.tree_painter.tip_label_font_family).to_string(),
+        );
+        settings.insert(
+            "painter.tipLabelFontSize".to_string(),
+            format!("{:.6}", self.tree_painter.tip_label_font_size),
+        );
+        settings.insert(
+            "painter.tipLabelNumberFormat".to_string(),
+            tip_label_number_format_name(self.tree_painter.tip_label_format).to_string(),
+        );
+        settings.insert(
+            "painter.tipLabelPrecision".to_string(),
+            self.tree_painter.tip_label_precision.to_string(),
+        );
+
+        let mut branch_overrides: Vec<_> = self.tree_painter.branch_color_overrides().iter().collect();
+        branch_overrides.sort_by_key(|(node_id, _)| **node_id);
+        for (node_id, color) in branch_overrides {
+            settings.insert(
+                format!("override.branch.{}", node_id),
+                color_to_hex_rgba(*color),
+            );
+        }
+
+        let mut tip_overrides: Vec<_> = self.tree_painter.tip_label_color_overrides().iter().collect();
+        tip_overrides.sort_by_key(|(node_id, _)| **node_id);
+        for (node_id, color) in tip_overrides {
+            settings.insert(
+                format!("override.tipLabel.{}", node_id),
+                color_to_hex_rgba(*color),
+            );
+        }
+
+        let mut highlights: Vec<_> = self.tree_painter.highlighted_clades().iter().collect();
+        highlights.sort_by_key(|(node_id, _)| **node_id);
+        for (node_id, color) in highlights {
+            settings.insert(
+                format!("highlight.clade.{}", node_id),
+                color_to_hex_rgba(*color),
+            );
+        }
+
+        settings
+    }
+
+    fn apply_rtr_settings(&mut self, settings: &BTreeMap<String, String>) {
+        if let Some(v) = settings.get("layout.type").and_then(|s| parse_layout_type(s)) {
+            self.current_layout = v;
+        }
+        if let Some(v) = settings.get("viewer.zoom").and_then(|s| s.parse::<f32>().ok()) {
+            self.tree_viewer.set_zoom(v.clamp(1.0, 5.0));
+        }
+        if let Some(v) = settings
+            .get("viewer.verticalExpansion")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_viewer.set_vertical_expansion(v.max(0.1));
+        }
+        if let Some(v) = settings
+            .get("viewer.selectionMode")
+            .and_then(|s| parse_selection_mode(s))
+        {
+            self.tree_viewer.set_selection_mode(v);
+        }
+        if let Some(v) = settings.get("render.backend").and_then(|s| parse_render_backend(s)) {
+            self.render_backend = v;
+        }
+
+        if let Some(v) = settings.get("trees.rooting").and_then(|s| parse_bool(s)) {
+            self.root_tree_enabled = v;
+        }
+        if let Some(v) = settings
+            .get("trees.rootingType")
+            .and_then(|s| parse_root_method(s))
+        {
+            self.root_method = v;
+        }
+        if let Some(v) = settings.get("trees.order").and_then(|s| parse_bool(s)) {
+            self.order_nodes_enabled = v;
+        }
+        if let Some(v) = settings
+            .get("trees.orderType")
+            .and_then(|s| parse_node_ordering(s))
+        {
+            self.node_ordering = v;
+        }
+        if let Some(v) = settings.get("trees.transform").and_then(|s| parse_bool(s)) {
+            self.transform_branches_enabled = v;
+        }
+        if let Some(v) = settings
+            .get("trees.transformType")
+            .and_then(|s| parse_branch_transform(s))
+        {
+            self.branch_transform = v;
+        }
+
+        if let Some(v) = settings
+            .get("painter.branchLineWidth")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.branch_stroke.width = v.clamp(1.0, 5.0);
+        }
+        if let Some(v) = settings
+            .get("painter.branchColor")
+            .and_then(|s| parse_hex_color_alpha(s))
+        {
+            self.tree_painter.branch_stroke.color = v;
+        }
+        if let Some(v) = settings
+            .get("painter.branchHighlightWidth")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.branch_highlight_stroke.width = v.max(0.1);
+        }
+        if let Some(v) = settings
+            .get("painter.branchHighlightColor")
+            .and_then(|s| parse_hex_color_alpha(s))
+        {
+            self.tree_painter.branch_highlight_stroke.color = v;
+        }
+        if let Some(v) = settings
+            .get("painter.nodeRadius")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.node_radius = v.max(0.5);
+        }
+        apply_color_setting(settings, "painter.leafColor", &mut self.tree_painter.leaf_color);
+        apply_color_setting(
+            settings,
+            "painter.internalNodeColor",
+            &mut self.tree_painter.internal_node_color,
+        );
+        apply_color_setting(settings, "painter.selectedColor", &mut self.tree_painter.selected_color);
+        apply_color_setting(settings, "painter.labelColor", &mut self.tree_painter.label_color);
+        apply_color_setting(
+            settings,
+            "painter.branchLabelColor",
+            &mut self.tree_painter.branch_label_color,
+        );
+        apply_color_setting(
+            settings,
+            "painter.backgroundColor",
+            &mut self.tree_painter.background_color,
+        );
+        apply_color_setting(settings, "painter.canvasColor", &mut self.tree_painter.canvas_color);
+        apply_color_setting(
+            settings,
+            "painter.highlightColor",
+            &mut self.tree_painter.highlight_color,
+        );
+        apply_color_setting(
+            settings,
+            "painter.tipSelectionColor",
+            &mut self.tree_painter.tip_selection_color,
+        );
+
+        apply_bool_setting(settings, "painter.showTipLabels", &mut self.tree_painter.show_tip_labels);
+        apply_bool_setting(settings, "painter.showNodeLabels", &mut self.tree_painter.show_node_labels);
+        apply_bool_setting(
+            settings,
+            "painter.showBranchLabels",
+            &mut self.tree_painter.show_branch_labels,
+        );
+        apply_bool_setting(settings, "painter.showScaleBar", &mut self.tree_painter.show_scale_bar);
+        apply_bool_setting(settings, "painter.showTipShapes", &mut self.tree_painter.show_tip_shapes);
+        apply_bool_setting(
+            settings,
+            "painter.showNodeShapes",
+            &mut self.tree_painter.show_node_shapes,
+        );
+        apply_bool_setting(settings, "painter.showNodeBars", &mut self.tree_painter.show_node_bars);
+        apply_bool_setting(
+            settings,
+            "painter.alignTipLabels",
+            &mut self.tree_painter.align_tip_labels,
+        );
+
+        if let Some(v) = settings.get("painter.nodeBarField") {
+            self.tree_painter
+                .set_node_bar_field((!v.eq_ignore_ascii_case("null")).then(|| v.to_string()));
+        }
+        if let Some(v) = settings
+            .get("painter.nodeBarColor")
+            .and_then(|s| parse_hex_color_alpha(s))
+        {
+            self.tree_painter.set_node_bar_color(v);
+        }
+        if let Some(v) = settings
+            .get("painter.nodeBarThickness")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.set_node_bar_thickness(v);
+        }
+        if let Some(v) = settings
+            .get("painter.tipLabelDisplay")
+            .and_then(|s| parse_tip_label_display(s))
+        {
+            self.tree_painter.tip_label_display = v;
+        }
+        if let Some(v) = settings
+            .get("painter.tipLabelFontFamily")
+            .and_then(|s| parse_tip_label_font_family(s))
+        {
+            self.tree_painter.tip_label_font_family = v;
+        }
+        if let Some(v) = settings
+            .get("painter.tipLabelFontSize")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.tip_label_font_size = v.max(6.0);
+        }
+        if let Some(v) = settings
+            .get("painter.tipLabelNumberFormat")
+            .and_then(|s| parse_tip_label_number_format(s))
+        {
+            self.tree_painter.tip_label_format = v;
+        }
+        if let Some(v) = settings
+            .get("painter.tipLabelPrecision")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            self.tree_painter.tip_label_precision = v.min(12);
+        }
+
+        self.tree_painter.clear_color_overrides();
+        self.tree_painter.clear_highlighted_clades();
+        for (k, v) in settings {
+            if let Some(id) = k
+                .strip_prefix("override.branch.")
+                .and_then(|s| s.parse::<NodeId>().ok())
+            {
+                if let Some(color) = parse_hex_color_alpha(v) {
+                    self.tree_painter.set_branch_color(id, color);
+                }
+            } else if let Some(id) = k
+                .strip_prefix("override.tipLabel.")
+                .and_then(|s| s.parse::<NodeId>().ok())
+            {
+                if let Some(color) = parse_hex_color_alpha(v) {
+                    self.tree_painter.set_tip_label_color(id, color);
+                }
+            } else if let Some(id) = k
+                .strip_prefix("highlight.clade.")
+                .and_then(|s| s.parse::<NodeId>().ok())
+            {
+                if let Some(color) = parse_hex_color_alpha(v) {
+                    self.tree_painter.add_highlighted_clade(id, color);
+                }
+            }
+        }
+
+        self.tree_render_signature = None;
+        self.tree_texture = None;
     }
 
     fn export_vector_format(&mut self, path: &std::path::Path, format: ExportFormat) {
@@ -1441,16 +2102,22 @@ impl eframe::App for FigTreeGui {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
 
-                    if ui.add_enabled(false, egui::Button::new("Save")).clicked() {
-                        // TODO: Save current tree
+                    if ui
+                        .add_enabled(self.tree_viewer.current_tree().is_some(), egui::Button::new("Save"))
+                        .clicked()
+                    {
+                        self.save_rtr();
                         ui.close();
                     }
 
                     if ui
-                        .add_enabled(false, egui::Button::new("Save As..."))
+                        .add_enabled(
+                            self.tree_viewer.current_tree().is_some(),
+                            egui::Button::new("Save As..."),
+                        )
                         .clicked()
                     {
-                        // TODO: Save tree with new name
+                        self.save_rtr_as_dialog();
                         ui.close();
                     }
 
@@ -1499,6 +2166,7 @@ impl eframe::App for FigTreeGui {
                         self.export_jpeg_dialog(ctx);
                         ui.close();
                     }
+
                 });
 
                 ui.menu_button("Edit", |ui| {

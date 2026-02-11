@@ -376,12 +376,20 @@ impl TreePainter {
         self.branch_color_overrides.get(&node_id).copied()
     }
 
+    pub fn branch_color_overrides(&self) -> &HashMap<NodeId, Color32> {
+        &self.branch_color_overrides
+    }
+
     pub fn set_tip_label_color(&mut self, node_id: NodeId, color: Color32) {
         self.tip_label_color_overrides.insert(node_id, color);
     }
 
     pub fn tip_label_color_override(&self, node_id: NodeId) -> Option<Color32> {
         self.tip_label_color_overrides.get(&node_id).copied()
+    }
+
+    pub fn tip_label_color_overrides(&self) -> &HashMap<NodeId, Color32> {
+        &self.tip_label_color_overrides
     }
 
     pub fn clear_color_overrides(&mut self) {
