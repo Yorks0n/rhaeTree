@@ -154,6 +154,20 @@ pub struct TreePainter {
     pub show_scale_bar: bool,
     pub show_tip_shapes: bool,
     pub show_node_shapes: bool,
+    pub tip_shape: ShapeType,
+    pub node_shape: ShapeType,
+    pub tip_shape_size_mode: ShapeSizeMode,
+    pub node_shape_size_mode: ShapeSizeMode,
+    pub tip_shape_size_attribute: Option<String>,
+    pub node_shape_size_attribute: Option<String>,
+    pub tip_shape_max_size: f32,
+    pub node_shape_max_size: f32,
+    pub tip_shape_min_size: f32,
+    pub node_shape_min_size: f32,
+    pub tip_shape_color_mode: ShapeColorMode,
+    pub node_shape_color_mode: ShapeColorMode,
+    pub tip_shape_fixed_color: Color32,
+    pub node_shape_fixed_color: Color32,
     pub show_node_bars: bool,
     pub node_bar_field: Option<String>,
     pub node_bar_color: Color32,
@@ -190,6 +204,20 @@ impl Default for TreePainter {
             show_scale_bar: false,
             show_tip_shapes: false,
             show_node_shapes: false,
+            tip_shape: ShapeType::Circle,
+            node_shape: ShapeType::Circle,
+            tip_shape_size_mode: ShapeSizeMode::Fixed,
+            node_shape_size_mode: ShapeSizeMode::Fixed,
+            tip_shape_size_attribute: None,
+            node_shape_size_attribute: None,
+            tip_shape_max_size: 4.0,
+            node_shape_max_size: 4.0,
+            tip_shape_min_size: 2.0,
+            node_shape_min_size: 2.0,
+            tip_shape_color_mode: ShapeColorMode::UserSelection,
+            node_shape_color_mode: ShapeColorMode::UserSelection,
+            tip_shape_fixed_color: Color32::from_rgb(255, 205, 140),
+            node_shape_fixed_color: Color32::from_rgb(135, 205, 255),
             show_node_bars: false,
             node_bar_field: None,
             node_bar_color: Color32::from_rgba_unmultiplied(96, 186, 255, 100),
@@ -411,6 +439,51 @@ impl TreePainter {
 
     pub fn highlighted_clades(&self) -> &HashMap<NodeId, Color32> {
         &self.highlighted_clades
+    }
+
+    pub fn shape_size_for_node(
+        &self,
+        tree: &Tree,
+        node_id: NodeId,
+        is_tip: bool,
+        value_range: Option<(f64, f64)>,
+    ) -> f32 {
+        let (mode, attr, min_size, max_size) = if is_tip {
+            (
+                self.tip_shape_size_mode,
+                self.tip_shape_size_attribute.as_deref(),
+                self.tip_shape_min_size,
+                self.tip_shape_max_size,
+            )
+        } else {
+            (
+                self.node_shape_size_mode,
+                self.node_shape_size_attribute.as_deref(),
+                self.node_shape_min_size,
+                self.node_shape_max_size,
+            )
+        };
+
+        if !matches!(mode, ShapeSizeMode::Attribute) {
+            return max_size.max(0.5);
+        }
+
+        let Some(key) = attr else {
+            return max_size.max(0.5);
+        };
+        let Some(v) = tree.nodes[node_id].get_numeric_attribute(key) else {
+            return max_size.max(0.5);
+        };
+        let Some((min_v, max_v)) = value_range else {
+            return max_size.max(0.5);
+        };
+
+        if (max_v - min_v).abs() < f64::EPSILON {
+            return max_size.max(0.5);
+        }
+
+        let t = ((v - min_v) / (max_v - min_v)).clamp(0.0, 1.0) as f32;
+        (min_size + (max_size - min_size) * t).max(0.5)
     }
 
     pub fn compute_highlight_shapes(
@@ -2896,6 +2969,53 @@ impl TreePainter {
                 end_angle,
                 color,
             );
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShapeType {
+    Circle,
+    Square,
+    Diamond,
+}
+
+impl ShapeType {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Circle => "Circle",
+            Self::Square => "Square",
+            Self::Diamond => "Diamond",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShapeSizeMode {
+    Fixed,
+    Attribute,
+}
+
+impl ShapeSizeMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fixed => "Fixed",
+            Self::Attribute => "Attribute",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShapeColorMode {
+    UserSelection,
+    Fixed,
+}
+
+impl ShapeColorMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::UserSelection => "User Selection",
+            Self::Fixed => "Fixed",
         }
     }
 }

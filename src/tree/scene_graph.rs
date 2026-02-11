@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
 use crate::tree::layout::{TreeLayout, TreeLayoutType};
-use crate::tree::painter::{HighlightShape, TipLabelHit, TreePainter};
+use crate::tree::painter::{HighlightShape, ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelHit, TreePainter};
 use crate::tree::viewer::SelectionMode;
 use crate::tree::{NodeId, Tree, TreeNode};
 
@@ -400,6 +400,17 @@ pub fn build_tree_scene(
         }
     }
 
+    let tip_value_range = if matches!(painter.tip_shape_size_mode, ShapeSizeMode::Attribute) {
+        shape_value_range_for_nodes(tree, true, painter.tip_shape_size_attribute.as_deref())
+    } else {
+        None
+    };
+    let node_value_range = if matches!(painter.node_shape_size_mode, ShapeSizeMode::Attribute) {
+        shape_value_range_for_nodes(tree, false, painter.node_shape_size_attribute.as_deref())
+    } else {
+        None
+    };
+
     let mut tip_label_hits = Vec::new();
     for node in &tree.nodes {
         let mut p = to_local(to_screen(layout.positions[node.id]));
@@ -421,12 +432,21 @@ pub fn build_tree_scene(
         }
 
         let is_selected = selected_nodes.contains(&node.id) || selected_tips.contains(&node.id);
-        let fill = if is_selected {
+        let base_fill = if is_selected {
             painter.selected_color
         } else if node.is_leaf() {
             painter.leaf_color
         } else {
             painter.internal_node_color
+        };
+        let fill = if is_selected {
+            painter.selected_color
+        } else if node.is_leaf() && matches!(painter.tip_shape_color_mode, ShapeColorMode::Fixed) {
+            painter.tip_shape_fixed_color
+        } else if !node.is_leaf() && matches!(painter.node_shape_color_mode, ShapeColorMode::Fixed) {
+            painter.node_shape_fixed_color
+        } else {
+            base_fill
         };
         let should_draw = if node.is_leaf() {
             painter.show_tip_shapes
@@ -434,11 +454,15 @@ pub fn build_tree_scene(
             painter.show_node_shapes
         };
         if should_draw {
-            primitives.push(ScenePrimitive::FillCircle {
-                center: p,
-                radius: painter.node_radius,
-                color: fill,
-            });
+            let is_tip = node.is_leaf();
+            let radius = painter.shape_size_for_node(
+                tree,
+                node.id,
+                is_tip,
+                if is_tip { tip_value_range } else { node_value_range },
+            );
+            let shape = if is_tip { painter.tip_shape } else { painter.node_shape };
+            push_shape_primitive(&mut primitives, p, radius, fill, shape);
         }
 
         if node.is_leaf() && painter.show_tip_labels {
@@ -893,6 +917,70 @@ fn approx_text_size(text: &str, font_size: f32) -> Vec2 {
         (text.chars().count() as f32 * font_size * 0.56).max(2.0),
         font_size.max(8.0),
     )
+}
+
+fn shape_value_range_for_nodes(
+    tree: &Tree,
+    tips_only: bool,
+    attr: Option<&str>,
+) -> Option<(f64, f64)> {
+    let key = attr?;
+    let mut min_v = f64::INFINITY;
+    let mut max_v = f64::NEG_INFINITY;
+    for n in &tree.nodes {
+        if tips_only != n.is_leaf() {
+            continue;
+        }
+        if let Some(v) = n.get_numeric_attribute(key) {
+            if v.is_finite() {
+                min_v = min_v.min(v);
+                max_v = max_v.max(v);
+            }
+        }
+    }
+    if min_v.is_finite() && max_v.is_finite() {
+        Some((min_v, max_v))
+    } else {
+        None
+    }
+}
+
+fn push_shape_primitive(
+    primitives: &mut Vec<ScenePrimitive>,
+    center: Pos2,
+    radius: f32,
+    color: Color32,
+    shape: ShapeType,
+) {
+    match shape {
+        ShapeType::Circle => primitives.push(ScenePrimitive::FillCircle {
+            center,
+            radius,
+            color,
+        }),
+        ShapeType::Square => {
+            let half = radius.max(0.5);
+            primitives.push(ScenePrimitive::FillRect {
+                rect: Rect::from_min_max(
+                    Pos2::new(center.x - half, center.y - half),
+                    Pos2::new(center.x + half, center.y + half),
+                ),
+                color,
+            });
+        }
+        ShapeType::Diamond => {
+            let r = radius.max(0.5);
+            primitives.push(ScenePrimitive::FillPolygon {
+                points: vec![
+                    Pos2::new(center.x, center.y - r),
+                    Pos2::new(center.x + r, center.y),
+                    Pos2::new(center.x, center.y + r),
+                    Pos2::new(center.x - r, center.y),
+                ],
+                color,
+            });
+        }
+    }
 }
 
 fn nice_tick_span(tree_width: f32) -> f32 {

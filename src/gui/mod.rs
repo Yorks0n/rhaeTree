@@ -13,7 +13,10 @@ use rfd::FileDialog;
 
 use crate::app::{AppConfig, ExportFormat};
 use crate::io;
-use crate::tree::painter::{TipLabelDisplay, TipLabelFontFamily, TipLabelNumberFormat};
+use crate::tree::painter::{
+    ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelDisplay, TipLabelFontFamily,
+    TipLabelNumberFormat,
+};
 use crate::tree::skia_renderer::SkiaTreeRenderer;
 use crate::tree::vello_renderer::VelloTreeRenderer;
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
@@ -381,6 +384,53 @@ fn parse_branch_transform(s: &str) -> Option<BranchTransform> {
         "equal" => Some(BranchTransform::Equal),
         "cladogram" => Some(BranchTransform::Cladogram),
         "proportional" => Some(BranchTransform::Proportional),
+        _ => None,
+    }
+}
+
+fn shape_type_name(value: ShapeType) -> &'static str {
+    match value {
+        ShapeType::Circle => "circle",
+        ShapeType::Square => "square",
+        ShapeType::Diamond => "diamond",
+    }
+}
+
+fn parse_shape_type(s: &str) -> Option<ShapeType> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "circle" => Some(ShapeType::Circle),
+        "square" => Some(ShapeType::Square),
+        "diamond" => Some(ShapeType::Diamond),
+        _ => None,
+    }
+}
+
+fn shape_size_mode_name(value: ShapeSizeMode) -> &'static str {
+    match value {
+        ShapeSizeMode::Fixed => "fixed",
+        ShapeSizeMode::Attribute => "attribute",
+    }
+}
+
+fn parse_shape_size_mode(s: &str) -> Option<ShapeSizeMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "fixed" => Some(ShapeSizeMode::Fixed),
+        "attribute" => Some(ShapeSizeMode::Attribute),
+        _ => None,
+    }
+}
+
+fn shape_color_mode_name(value: ShapeColorMode) -> &'static str {
+    match value {
+        ShapeColorMode::UserSelection => "user_selection",
+        ShapeColorMode::Fixed => "fixed",
+    }
+}
+
+fn parse_shape_color_mode(s: &str) -> Option<ShapeColorMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "user_selection" => Some(ShapeColorMode::UserSelection),
+        "fixed" => Some(ShapeColorMode::Fixed),
         _ => None,
     }
 }
@@ -980,6 +1030,68 @@ impl FigTreeGui {
             self.tree_painter.show_node_shapes.to_string(),
         );
         settings.insert(
+            "painter.tipShape.type".to_string(),
+            shape_type_name(self.tree_painter.tip_shape).to_string(),
+        );
+        settings.insert(
+            "painter.tipShape.maxSize".to_string(),
+            format!("{:.6}", self.tree_painter.tip_shape_max_size),
+        );
+        settings.insert(
+            "painter.tipShape.sizeBy".to_string(),
+            shape_size_mode_name(self.tree_painter.tip_shape_size_mode).to_string(),
+        );
+        settings.insert(
+            "painter.tipShape.sizeAttribute".to_string(),
+            self.tree_painter
+                .tip_shape_size_attribute
+                .clone()
+                .unwrap_or_else(|| "null".to_string()),
+        );
+        settings.insert(
+            "painter.tipShape.minSize".to_string(),
+            format!("{:.6}", self.tree_painter.tip_shape_min_size),
+        );
+        settings.insert(
+            "painter.tipShape.colorBy".to_string(),
+            shape_color_mode_name(self.tree_painter.tip_shape_color_mode).to_string(),
+        );
+        settings.insert(
+            "painter.tipShape.fixedColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.tip_shape_fixed_color),
+        );
+        settings.insert(
+            "painter.nodeShape.type".to_string(),
+            shape_type_name(self.tree_painter.node_shape).to_string(),
+        );
+        settings.insert(
+            "painter.nodeShape.maxSize".to_string(),
+            format!("{:.6}", self.tree_painter.node_shape_max_size),
+        );
+        settings.insert(
+            "painter.nodeShape.sizeBy".to_string(),
+            shape_size_mode_name(self.tree_painter.node_shape_size_mode).to_string(),
+        );
+        settings.insert(
+            "painter.nodeShape.sizeAttribute".to_string(),
+            self.tree_painter
+                .node_shape_size_attribute
+                .clone()
+                .unwrap_or_else(|| "null".to_string()),
+        );
+        settings.insert(
+            "painter.nodeShape.minSize".to_string(),
+            format!("{:.6}", self.tree_painter.node_shape_min_size),
+        );
+        settings.insert(
+            "painter.nodeShape.colorBy".to_string(),
+            shape_color_mode_name(self.tree_painter.node_shape_color_mode).to_string(),
+        );
+        settings.insert(
+            "painter.nodeShape.fixedColor".to_string(),
+            color_to_hex_rgba(self.tree_painter.node_shape_fixed_color),
+        );
+        settings.insert(
             "painter.showNodeBars".to_string(),
             self.tree_painter.show_node_bars.to_string(),
         );
@@ -1178,6 +1290,86 @@ impl FigTreeGui {
             "painter.showNodeShapes",
             &mut self.tree_painter.show_node_shapes,
         );
+        if let Some(v) = settings
+            .get("painter.tipShape.type")
+            .and_then(|s| parse_shape_type(s))
+        {
+            self.tree_painter.tip_shape = v;
+        }
+        if let Some(v) = settings
+            .get("painter.tipShape.maxSize")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.tip_shape_max_size = v.max(0.5);
+        }
+        if let Some(v) = settings
+            .get("painter.tipShape.sizeBy")
+            .and_then(|s| parse_shape_size_mode(s))
+        {
+            self.tree_painter.tip_shape_size_mode = v;
+        }
+        if let Some(v) = settings.get("painter.tipShape.sizeAttribute") {
+            self.tree_painter.tip_shape_size_attribute =
+                (!v.eq_ignore_ascii_case("null")).then(|| v.to_string());
+        }
+        if let Some(v) = settings
+            .get("painter.tipShape.minSize")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.tip_shape_min_size = v.max(0.5);
+        }
+        if let Some(v) = settings
+            .get("painter.tipShape.colorBy")
+            .and_then(|s| parse_shape_color_mode(s))
+        {
+            self.tree_painter.tip_shape_color_mode = v;
+        }
+        if let Some(v) = settings
+            .get("painter.tipShape.fixedColor")
+            .and_then(|s| parse_hex_color_alpha(s))
+        {
+            self.tree_painter.tip_shape_fixed_color = v;
+        }
+        if let Some(v) = settings
+            .get("painter.nodeShape.type")
+            .and_then(|s| parse_shape_type(s))
+        {
+            self.tree_painter.node_shape = v;
+        }
+        if let Some(v) = settings
+            .get("painter.nodeShape.maxSize")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.node_shape_max_size = v.max(0.5);
+        }
+        if let Some(v) = settings
+            .get("painter.nodeShape.sizeBy")
+            .and_then(|s| parse_shape_size_mode(s))
+        {
+            self.tree_painter.node_shape_size_mode = v;
+        }
+        if let Some(v) = settings.get("painter.nodeShape.sizeAttribute") {
+            self.tree_painter.node_shape_size_attribute =
+                (!v.eq_ignore_ascii_case("null")).then(|| v.to_string());
+        }
+        if let Some(v) = settings
+            .get("painter.nodeShape.minSize")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.node_shape_min_size = v.max(0.5);
+        }
+        if let Some(v) = settings
+            .get("painter.nodeShape.colorBy")
+            .and_then(|s| parse_shape_color_mode(s))
+        {
+            self.tree_painter.node_shape_color_mode = v;
+        }
+        if let Some(v) = settings
+            .get("painter.nodeShape.fixedColor")
+            .and_then(|s| parse_hex_color_alpha(s))
+        {
+            self.tree_painter.node_shape_fixed_color = v;
+        }
         apply_bool_setting(settings, "painter.showNodeBars", &mut self.tree_painter.show_node_bars);
         apply_bool_setting(
             settings,
@@ -1688,6 +1880,20 @@ impl FigTreeGui {
         self.tree_painter.show_scale_bar.hash(&mut hasher);
         self.tree_painter.show_tip_shapes.hash(&mut hasher);
         self.tree_painter.show_node_shapes.hash(&mut hasher);
+        self.tree_painter.tip_shape.hash(&mut hasher);
+        self.tree_painter.node_shape.hash(&mut hasher);
+        self.tree_painter.tip_shape_size_mode.hash(&mut hasher);
+        self.tree_painter.node_shape_size_mode.hash(&mut hasher);
+        self.tree_painter.tip_shape_size_attribute.hash(&mut hasher);
+        self.tree_painter.node_shape_size_attribute.hash(&mut hasher);
+        self.tree_painter.tip_shape_max_size.to_bits().hash(&mut hasher);
+        self.tree_painter.node_shape_max_size.to_bits().hash(&mut hasher);
+        self.tree_painter.tip_shape_min_size.to_bits().hash(&mut hasher);
+        self.tree_painter.node_shape_min_size.to_bits().hash(&mut hasher);
+        self.tree_painter.tip_shape_color_mode.hash(&mut hasher);
+        self.tree_painter.node_shape_color_mode.hash(&mut hasher);
+        hash_color(&mut hasher, self.tree_painter.tip_shape_fixed_color);
+        hash_color(&mut hasher, self.tree_painter.node_shape_fixed_color);
         self.tree_painter.show_node_bars.hash(&mut hasher);
         self.tree_painter.align_tip_labels.hash(&mut hasher);
         self.tree_painter.tip_label_display.hash(&mut hasher);
@@ -3526,7 +3732,130 @@ impl eframe::App for FigTreeGui {
                     toggle
                 });
 
-                tip_shapes_state.show_body_indented(&tip_shapes_header_response.response, ui, |_ui| {});
+                tip_shapes_state.show_body_indented(&tip_shapes_header_response.response, ui, |ui| {
+                    let mut numeric_fields: Vec<String> = self
+                        .tree_viewer
+                        .current_tree()
+                        .map(|t| t.node_numeric_attribute_keys())
+                        .unwrap_or_default();
+                    numeric_fields.sort();
+                    numeric_fields.dedup();
+
+                    ui.horizontal(|ui| {
+                        ui.label("Shape:");
+                        egui::ComboBox::from_id_salt("tip_shape_type")
+                            .selected_text(self.tree_painter.tip_shape.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.tree_painter.tip_shape,
+                                    ShapeType::Circle,
+                                    ShapeType::Circle.label(),
+                                );
+                                ui.selectable_value(
+                                    &mut self.tree_painter.tip_shape,
+                                    ShapeType::Square,
+                                    ShapeType::Square.label(),
+                                );
+                                ui.selectable_value(
+                                    &mut self.tree_painter.tip_shape,
+                                    ShapeType::Diamond,
+                                    ShapeType::Diamond.label(),
+                                );
+                            });
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Max size:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.tree_painter.tip_shape_max_size)
+                                .range(1.0..=64.0)
+                                .speed(0.2),
+                        );
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Size by:");
+                        let selected = if matches!(
+                            self.tree_painter.tip_shape_size_mode,
+                            ShapeSizeMode::Fixed
+                        ) {
+                            "Fixed".to_string()
+                        } else {
+                            self.tree_painter
+                                .tip_shape_size_attribute
+                                .clone()
+                                .unwrap_or_else(|| "Attribute".to_string())
+                        };
+                        egui::ComboBox::from_id_salt("tip_shape_size_by")
+                            .selected_text(selected)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(
+                                        matches!(
+                                            self.tree_painter.tip_shape_size_mode,
+                                            ShapeSizeMode::Fixed
+                                        ),
+                                        "Fixed",
+                                    )
+                                    .clicked()
+                                {
+                                    self.tree_painter.tip_shape_size_mode = ShapeSizeMode::Fixed;
+                                    self.tree_painter.tip_shape_size_attribute = None;
+                                }
+                                for field in &numeric_fields {
+                                    let selected = matches!(
+                                        self.tree_painter.tip_shape_size_mode,
+                                        ShapeSizeMode::Attribute
+                                    ) && self.tree_painter.tip_shape_size_attribute.as_deref()
+                                        == Some(field.as_str());
+                                    if ui.selectable_label(selected, field).clicked() {
+                                        self.tree_painter.tip_shape_size_mode =
+                                            ShapeSizeMode::Attribute;
+                                        self.tree_painter.tip_shape_size_attribute =
+                                            Some(field.clone());
+                                    }
+                                }
+                            });
+                    });
+
+                    if matches!(
+                        self.tree_painter.tip_shape_size_mode,
+                        ShapeSizeMode::Attribute
+                    ) {
+                        ui.horizontal(|ui| {
+                            ui.label("Min size:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.tree_painter.tip_shape_min_size)
+                                    .range(0.5..=self.tree_painter.tip_shape_max_size.max(0.5))
+                                    .speed(0.2),
+                            );
+                        });
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.label("Color by:");
+                        egui::ComboBox::from_id_salt("tip_shape_color_by")
+                            .selected_text(self.tree_painter.tip_shape_color_mode.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.tree_painter.tip_shape_color_mode,
+                                    ShapeColorMode::UserSelection,
+                                    ShapeColorMode::UserSelection.label(),
+                                );
+                                ui.selectable_value(
+                                    &mut self.tree_painter.tip_shape_color_mode,
+                                    ShapeColorMode::Fixed,
+                                    ShapeColorMode::Fixed.label(),
+                                );
+                            });
+                    });
+                    if matches!(self.tree_painter.tip_shape_color_mode, ShapeColorMode::Fixed) {
+                        ui.horizontal(|ui| {
+                            ui.label("Color:");
+                            ui.color_edit_button_srgba(&mut self.tree_painter.tip_shape_fixed_color);
+                        });
+                    }
+                });
                 self.panel_states.tip_shapes_expanded = tip_shapes_state.is_open();
 
                 // Node Shapes
@@ -3554,7 +3883,137 @@ impl eframe::App for FigTreeGui {
                     toggle
                 });
 
-                node_shapes_state.show_body_indented(&node_shapes_header_response.response, ui, |_ui| {});
+                node_shapes_state.show_body_indented(
+                    &node_shapes_header_response.response,
+                    ui,
+                    |ui| {
+                        let mut numeric_fields: Vec<String> = self
+                            .tree_viewer
+                            .current_tree()
+                            .map(|t| t.node_numeric_attribute_keys())
+                            .unwrap_or_default();
+                        numeric_fields.sort();
+                        numeric_fields.dedup();
+
+                        ui.horizontal(|ui| {
+                            ui.label("Shape:");
+                            egui::ComboBox::from_id_salt("node_shape_type")
+                                .selected_text(self.tree_painter.node_shape.label())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.node_shape,
+                                        ShapeType::Circle,
+                                        ShapeType::Circle.label(),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.node_shape,
+                                        ShapeType::Square,
+                                        ShapeType::Square.label(),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.node_shape,
+                                        ShapeType::Diamond,
+                                        ShapeType::Diamond.label(),
+                                    );
+                                });
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Max size:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.tree_painter.node_shape_max_size)
+                                    .range(1.0..=64.0)
+                                    .speed(0.2),
+                            );
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Size by:");
+                            let selected = if matches!(
+                                self.tree_painter.node_shape_size_mode,
+                                ShapeSizeMode::Fixed
+                            ) {
+                                "Fixed".to_string()
+                            } else {
+                                self.tree_painter
+                                    .node_shape_size_attribute
+                                    .clone()
+                                    .unwrap_or_else(|| "Attribute".to_string())
+                            };
+                            egui::ComboBox::from_id_salt("node_shape_size_by")
+                                .selected_text(selected)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            matches!(
+                                                self.tree_painter.node_shape_size_mode,
+                                                ShapeSizeMode::Fixed
+                                            ),
+                                            "Fixed",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.tree_painter.node_shape_size_mode =
+                                            ShapeSizeMode::Fixed;
+                                        self.tree_painter.node_shape_size_attribute = None;
+                                    }
+                                    for field in &numeric_fields {
+                                        let selected = matches!(
+                                            self.tree_painter.node_shape_size_mode,
+                                            ShapeSizeMode::Attribute
+                                        ) && self.tree_painter.node_shape_size_attribute.as_deref()
+                                            == Some(field.as_str());
+                                        if ui.selectable_label(selected, field).clicked() {
+                                            self.tree_painter.node_shape_size_mode =
+                                                ShapeSizeMode::Attribute;
+                                            self.tree_painter.node_shape_size_attribute =
+                                                Some(field.clone());
+                                        }
+                                    }
+                                });
+                        });
+
+                        if matches!(
+                            self.tree_painter.node_shape_size_mode,
+                            ShapeSizeMode::Attribute
+                        ) {
+                            ui.horizontal(|ui| {
+                                ui.label("Min size:");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.tree_painter.node_shape_min_size)
+                                        .range(0.5..=self.tree_painter.node_shape_max_size.max(0.5))
+                                        .speed(0.2),
+                                );
+                            });
+                        }
+
+                        ui.horizontal(|ui| {
+                            ui.label("Color by:");
+                            egui::ComboBox::from_id_salt("node_shape_color_by")
+                                .selected_text(self.tree_painter.node_shape_color_mode.label())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.node_shape_color_mode,
+                                        ShapeColorMode::UserSelection,
+                                        ShapeColorMode::UserSelection.label(),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.node_shape_color_mode,
+                                        ShapeColorMode::Fixed,
+                                        ShapeColorMode::Fixed.label(),
+                                    );
+                                });
+                        });
+                        if matches!(self.tree_painter.node_shape_color_mode, ShapeColorMode::Fixed) {
+                            ui.horizontal(|ui| {
+                                ui.label("Color:");
+                                ui.color_edit_button_srgba(
+                                    &mut self.tree_painter.node_shape_fixed_color,
+                                );
+                            });
+                        }
+                    },
+                );
                 self.panel_states.node_shapes_expanded = node_shapes_state.is_open();
 
                 // Node Bars
