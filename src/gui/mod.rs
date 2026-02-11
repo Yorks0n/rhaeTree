@@ -99,7 +99,7 @@ impl AnnotateField {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub struct PanelStates {
     layout_expanded: bool,
     appearance_expanded: bool,
@@ -111,6 +111,48 @@ pub struct PanelStates {
     node_shapes_expanded: bool,
     node_bars_expanded: bool,
     trees_expanded: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ControlSection {
+    Layout,
+    Trees,
+    Appearance,
+    LabelsTip,
+    LabelsNode,
+    LabelsBranch,
+    ShapesTip,
+    ShapesNode,
+    NodeBars,
+    ScaleBar,
+}
+
+impl PanelStates {
+    fn expand_only(&mut self, section: ControlSection) {
+        self.layout_expanded = false;
+        self.trees_expanded = false;
+        self.appearance_expanded = false;
+        self.tip_labels_expanded = false;
+        self.node_labels_expanded = false;
+        self.branch_labels_expanded = false;
+        self.tip_shapes_expanded = false;
+        self.node_shapes_expanded = false;
+        self.node_bars_expanded = false;
+        self.scale_bar_expanded = false;
+
+        match section {
+            ControlSection::Layout => self.layout_expanded = true,
+            ControlSection::Trees => self.trees_expanded = true,
+            ControlSection::Appearance => self.appearance_expanded = true,
+            ControlSection::LabelsTip => self.tip_labels_expanded = true,
+            ControlSection::LabelsNode => self.node_labels_expanded = true,
+            ControlSection::LabelsBranch => self.branch_labels_expanded = true,
+            ControlSection::ShapesTip => self.tip_shapes_expanded = true,
+            ControlSection::ShapesNode => self.node_shapes_expanded = true,
+            ControlSection::NodeBars => self.node_bars_expanded = true,
+            ControlSection::ScaleBar => self.scale_bar_expanded = true,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -523,15 +565,15 @@ impl FigTreeGui {
             tree_painter: crate::tree::painter::TreePainter::default(),
             panel_states: PanelStates {
                 layout_expanded: true,
-                appearance_expanded: true,
-                tip_labels_expanded: true,
-                node_labels_expanded: true,
+                appearance_expanded: false,
+                tip_labels_expanded: false,
+                node_labels_expanded: false,
                 branch_labels_expanded: false,
                 scale_bar_expanded: false,
                 tip_shapes_expanded: false,
                 node_shapes_expanded: false,
                 node_bars_expanded: false,
-                trees_expanded: true,
+                trees_expanded: false,
             },
             color_picker_open: false,
             color_picker_hex_input: String::new(),
@@ -3450,15 +3492,19 @@ impl eframe::App for FigTreeGui {
             .min_width(180.0)
             .max_width(280.0)
             .show(ctx, |ui| {
-                ui.heading("Controls");
+                ui.visuals_mut().collapsing_header_frame = true;
 
                 // Add scroll area for the control panels
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                let prev_panel_states = self.panel_states;
 
                 // Layout Panel (expanded by default)
-                let layout_response = egui::CollapsingHeader::new("Layout")
+                let layout_response =
+                    egui::CollapsingHeader::new(egui::RichText::new("Layout").strong())
+                    .id_salt("controls_layout")
+                    .open(Some(self.panel_states.layout_expanded))
                     .default_open(self.panel_states.layout_expanded)
                     .show(ui, |ui| {
                         ui.label("Layout Type:");
@@ -3538,8 +3584,164 @@ impl eframe::App for FigTreeGui {
                     self.panel_states.layout_expanded = !self.panel_states.layout_expanded;
                 }
 
+                // Trees Panel
+                let trees_response =
+                    egui::CollapsingHeader::new(egui::RichText::new("Trees").strong())
+                    .id_salt("controls_trees")
+                    .open(Some(self.panel_states.trees_expanded))
+                    .default_open(self.panel_states.trees_expanded)
+                    .show(ui, |ui| {
+                        // Tree navigation
+                        if self.tree_viewer.tree_count() > 1 {
+                            ui.label("Navigation:");
+                            ui.horizontal(|ui| {
+                                if ui.button("← Previous").clicked() {
+                                    self.tree_viewer.show_previous_tree();
+                                }
+                                ui.label(format!(
+                                    "{} of {}",
+                                    self.tree_viewer.current_tree_index() + 1,
+                                    self.tree_viewer.tree_count()
+                                ));
+                                if ui.button("Next →").clicked() {
+                                    self.tree_viewer.show_next_tree();
+                                }
+                            });
+                        }
+
+                        let mut root_enabled = self.root_tree_enabled;
+                        if ui.checkbox(&mut root_enabled, "Root tree").changed() {
+                            self.record_undo_step();
+                            self.root_tree_enabled = root_enabled;
+                            self.apply_root_configuration(None);
+                        }
+
+                        let mut method = self.root_method;
+                        let combo_changed = ui
+                            .add_enabled_ui(self.root_tree_enabled, |ui| {
+                                let mut changed = false;
+                                egui::ComboBox::from_id_salt("root_tree_method")
+                                    .selected_text(method.label())
+                                    .show_ui(ui, |ui| {
+                                        changed |= ui
+                                            .selectable_value(
+                                                &mut method,
+                                                RootMethod::UserSelection,
+                                                RootMethod::UserSelection.label(),
+                                            )
+                                            .changed();
+                                        changed |= ui
+                                            .selectable_value(
+                                                &mut method,
+                                                RootMethod::Midpoint,
+                                                RootMethod::Midpoint.label(),
+                                            )
+                                            .changed();
+                                    });
+                                changed
+                            })
+                            .inner;
+
+                        if combo_changed && self.root_method != method {
+                            self.record_undo_step();
+                            let previous_method = self.root_method;
+                            self.root_method = method;
+                            self.apply_root_configuration(Some(previous_method));
+                        }
+
+                        ui.separator();
+
+                        // Order nodes checkbox and combobox
+                        let mut order_enabled = self.order_nodes_enabled;
+                        if ui.checkbox(&mut order_enabled, "Order nodes").changed() {
+                            self.record_undo_step();
+                            let previous_enabled = self.order_nodes_enabled;
+                            self.order_nodes_enabled = order_enabled;
+
+                            if order_enabled && !previous_enabled {
+                                // Apply ordering when enabling
+                                let increasing = matches!(self.node_ordering, NodeOrdering::Increasing);
+                                self.tree_viewer.apply_node_ordering(increasing);
+                            } else if !order_enabled && previous_enabled {
+                                // Restore unordered tree when disabling
+                                self.tree_viewer.restore_unordered_tree();
+                            }
+                        }
+
+                        ui.horizontal(|ui| {
+                            ui.label("Ordering:");
+                            let mut ordering = self.node_ordering;
+                            ui.add_enabled_ui(self.order_nodes_enabled, |ui| {
+                                egui::ComboBox::from_id_salt("node_ordering")
+                                    .selected_text(ordering.label())
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut ordering,
+                                            NodeOrdering::Increasing,
+                                            NodeOrdering::Increasing.label(),
+                                        );
+                                        ui.selectable_value(
+                                            &mut ordering,
+                                            NodeOrdering::Decreasing,
+                                            NodeOrdering::Decreasing.label(),
+                                        );
+                                    });
+                            });
+                            if self.order_nodes_enabled && ordering != self.node_ordering {
+                                self.record_undo_step();
+                                self.node_ordering = ordering;
+                                // Apply ordering when changed
+                                let increasing = matches!(ordering, NodeOrdering::Increasing);
+                                self.tree_viewer.apply_node_ordering(increasing);
+                            }
+                        });
+
+                        ui.separator();
+
+                        // Transform branches checkbox and combobox
+                        let mut transform_enabled = self.transform_branches_enabled;
+                        if ui.checkbox(&mut transform_enabled, "Transform branches").changed() {
+                            self.transform_branches_enabled = transform_enabled;
+                        }
+
+                        ui.horizontal(|ui| {
+                            ui.label("Transform:");
+                            let mut transform = self.branch_transform;
+                            ui.add_enabled_ui(self.transform_branches_enabled, |ui| {
+                                egui::ComboBox::from_id_salt("branch_transform")
+                                    .selected_text(transform.label())
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut transform,
+                                            BranchTransform::Equal,
+                                            BranchTransform::Equal.label(),
+                                        );
+                                        ui.selectable_value(
+                                            &mut transform,
+                                            BranchTransform::Cladogram,
+                                            BranchTransform::Cladogram.label(),
+                                        );
+                                        ui.selectable_value(
+                                            &mut transform,
+                                            BranchTransform::Proportional,
+                                            BranchTransform::Proportional.label(),
+                                        );
+                                    });
+                            });
+                            if transform != self.branch_transform {
+                                self.branch_transform = transform;
+                            }
+                        });
+                    });
+                if trees_response.header_response.clicked() {
+                    self.panel_states.trees_expanded = !self.panel_states.trees_expanded;
+                }
+
                 // Appearance Panel
-                let appearance_response = egui::CollapsingHeader::new("Appearance")
+                let appearance_response =
+                    egui::CollapsingHeader::new(egui::RichText::new("Appearance").strong())
+                    .id_salt("controls_appearance")
+                    .open(Some(self.panel_states.appearance_expanded))
                     .default_open(self.panel_states.appearance_expanded)
                     .show(ui, |ui| {
                         ui.label("Renderer:");
@@ -3584,6 +3786,7 @@ impl eframe::App for FigTreeGui {
                     tip_header_id,
                     self.panel_states.tip_labels_expanded,
                 );
+                tip_state.set_open(self.panel_states.tip_labels_expanded);
 
                 let tip_header_response = ui.horizontal(|ui| {
                     let toggle = tip_state.show_toggle_button(ui, paint_default_icon);
@@ -3593,8 +3796,10 @@ impl eframe::App for FigTreeGui {
                         self.tree_painter.show_tip_labels = show_tip_labels;
                     }
 
-                    let label_response =
-                        ui.add(egui::Label::new("Tip Labels").sense(egui::Sense::click()));
+                    let label_response = ui.add(
+                        egui::Label::new(egui::RichText::new("Labels: Tip").strong())
+                            .sense(egui::Sense::click()),
+                    );
                     if label_response.clicked() {
                         tip_state.toggle(ui);
                     }
@@ -3714,6 +3919,7 @@ impl eframe::App for FigTreeGui {
                     node_header_id,
                     self.panel_states.node_labels_expanded,
                 );
+                node_state.set_open(self.panel_states.node_labels_expanded);
 
                 let header_response = ui.horizontal(|ui| {
                     let toggle = node_state.show_toggle_button(ui, paint_default_icon);
@@ -3723,8 +3929,10 @@ impl eframe::App for FigTreeGui {
                         self.tree_painter.show_node_labels = show_labels;
                     }
 
-                    let label_response =
-                        ui.add(egui::Label::new("Node Labels").sense(egui::Sense::click()));
+                    let label_response = ui.add(
+                        egui::Label::new(egui::RichText::new("Labels: Node").strong())
+                            .sense(egui::Sense::click()),
+                    );
                     if label_response.clicked() {
                         node_state.toggle(ui);
                     }
@@ -3899,6 +4107,7 @@ impl eframe::App for FigTreeGui {
                     branch_header_id,
                     self.panel_states.branch_labels_expanded,
                 );
+                branch_state.set_open(self.panel_states.branch_labels_expanded);
 
                 let branch_header_response = ui.horizontal(|ui| {
                     let toggle = branch_state.show_toggle_button(ui, paint_default_icon);
@@ -3908,8 +4117,10 @@ impl eframe::App for FigTreeGui {
                         self.tree_painter.show_branch_labels = show_branch;
                     }
 
-                    let label_response =
-                        ui.add(egui::Label::new("Branch Labels").sense(egui::Sense::click()));
+                    let label_response = ui.add(
+                        egui::Label::new(egui::RichText::new("Labels: Branch").strong())
+                            .sense(egui::Sense::click()),
+                    );
                     if label_response.clicked() {
                         branch_state.toggle(ui);
                     }
@@ -3920,33 +4131,6 @@ impl eframe::App for FigTreeGui {
                 branch_state.show_body_indented(&branch_header_response.response, ui, |_ui| {});
                 self.panel_states.branch_labels_expanded = branch_state.is_open();
 
-                let scale_header_id = ui.make_persistent_id("controls_scale_bar");
-                let mut scale_state = CollapsingState::load_with_default_open(
-                    ui.ctx(),
-                    scale_header_id,
-                    self.panel_states.scale_bar_expanded,
-                );
-
-                let scale_header_response = ui.horizontal(|ui| {
-                    let toggle = scale_state.show_toggle_button(ui, paint_default_icon);
-
-                    let mut show_scale = self.tree_painter.show_scale_bar;
-                    if ui.checkbox(&mut show_scale, "").changed() {
-                        self.tree_painter.show_scale_bar = show_scale;
-                    }
-
-                    let label_response =
-                        ui.add(egui::Label::new("Scale Bar").sense(egui::Sense::click()));
-                    if label_response.clicked() {
-                        scale_state.toggle(ui);
-                    }
-
-                    toggle
-                });
-
-                scale_state.show_body_indented(&scale_header_response.response, ui, |_ui| {});
-                self.panel_states.scale_bar_expanded = scale_state.is_open();
-
                 // Tip Shapes
                 let tip_shapes_header_id = ui.make_persistent_id("controls_tip_shapes");
                 let mut tip_shapes_state = CollapsingState::load_with_default_open(
@@ -3954,6 +4138,7 @@ impl eframe::App for FigTreeGui {
                     tip_shapes_header_id,
                     self.panel_states.tip_shapes_expanded,
                 );
+                tip_shapes_state.set_open(self.panel_states.tip_shapes_expanded);
 
                 let tip_shapes_header_response = ui.horizontal(|ui| {
                     let toggle = tip_shapes_state.show_toggle_button(ui, paint_default_icon);
@@ -3963,8 +4148,10 @@ impl eframe::App for FigTreeGui {
                         self.tree_painter.show_tip_shapes = show_tip_shapes;
                     }
 
-                    let label_response =
-                        ui.add(egui::Label::new("Tip Shapes").sense(egui::Sense::click()));
+                    let label_response = ui.add(
+                        egui::Label::new(egui::RichText::new("Shapes: Tip").strong())
+                            .sense(egui::Sense::click()),
+                    );
                     if label_response.clicked() {
                         tip_shapes_state.toggle(ui);
                     }
@@ -4105,6 +4292,7 @@ impl eframe::App for FigTreeGui {
                     node_shapes_header_id,
                     self.panel_states.node_shapes_expanded,
                 );
+                node_shapes_state.set_open(self.panel_states.node_shapes_expanded);
 
                 let node_shapes_header_response = ui.horizontal(|ui| {
                     let toggle = node_shapes_state.show_toggle_button(ui, paint_default_icon);
@@ -4114,8 +4302,10 @@ impl eframe::App for FigTreeGui {
                         self.tree_painter.show_node_shapes = show_node_shapes;
                     }
 
-                    let label_response =
-                        ui.add(egui::Label::new("Node Shapes").sense(egui::Sense::click()));
+                    let label_response = ui.add(
+                        egui::Label::new(egui::RichText::new("Shapes: Node").strong())
+                            .sense(egui::Sense::click()),
+                    );
                     if label_response.clicked() {
                         node_shapes_state.toggle(ui);
                     }
@@ -4263,6 +4453,7 @@ impl eframe::App for FigTreeGui {
                     node_bars_header_id,
                     self.panel_states.node_bars_expanded,
                 );
+                node_bars_state.set_open(self.panel_states.node_bars_expanded);
 
                 let node_bars_header_response = ui.horizontal(|ui| {
                     let toggle = node_bars_state.show_toggle_button(ui, paint_default_icon);
@@ -4272,8 +4463,10 @@ impl eframe::App for FigTreeGui {
                         self.tree_painter.show_node_bars = show_node_bars;
                     }
 
-                    let label_response =
-                        ui.add(egui::Label::new("Node Bars").sense(egui::Sense::click()));
+                    let label_response = ui.add(
+                        egui::Label::new(egui::RichText::new("Node Bars").strong())
+                            .sense(egui::Sense::click()),
+                    );
                     if label_response.clicked() {
                         node_bars_state.toggle(ui);
                     }
@@ -4384,155 +4577,80 @@ impl eframe::App for FigTreeGui {
                 });
                 self.panel_states.node_bars_expanded = node_bars_state.is_open();
 
-                // Trees Panel
-                let trees_response = egui::CollapsingHeader::new("Trees")
-                    .default_open(self.panel_states.trees_expanded)
-                    .show(ui, |ui| {
-                        // Tree navigation
-                        if self.tree_viewer.tree_count() > 1 {
-                            ui.label("Navigation:");
-                            ui.horizontal(|ui| {
-                                if ui.button("← Previous").clicked() {
-                                    self.tree_viewer.show_previous_tree();
-                                }
-                                ui.label(format!(
-                                    "{} of {}",
-                                    self.tree_viewer.current_tree_index() + 1,
-                                    self.tree_viewer.tree_count()
-                                ));
-                                if ui.button("Next →").clicked() {
-                                    self.tree_viewer.show_next_tree();
-                                }
-                            });
-                        }
+                let scale_header_id = ui.make_persistent_id("controls_scale_bar");
+                let mut scale_state = CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    scale_header_id,
+                    self.panel_states.scale_bar_expanded,
+                );
+                scale_state.set_open(self.panel_states.scale_bar_expanded);
 
-                        let mut root_enabled = self.root_tree_enabled;
-                        if ui.checkbox(&mut root_enabled, "Root tree").changed() {
-                            self.record_undo_step();
-                            self.root_tree_enabled = root_enabled;
-                            self.apply_root_configuration(None);
-                        }
+                let scale_header_response = ui.horizontal(|ui| {
+                    let toggle = scale_state.show_toggle_button(ui, paint_default_icon);
 
-                        let mut method = self.root_method;
-                        let combo_changed = ui
-                            .add_enabled_ui(self.root_tree_enabled, |ui| {
-                                let mut changed = false;
-                                egui::ComboBox::from_id_salt("root_tree_method")
-                                    .selected_text(method.label())
-                                    .show_ui(ui, |ui| {
-                                        changed |= ui
-                                            .selectable_value(
-                                                &mut method,
-                                                RootMethod::UserSelection,
-                                                RootMethod::UserSelection.label(),
-                                            )
-                                            .changed();
-                                        changed |= ui
-                                            .selectable_value(
-                                                &mut method,
-                                                RootMethod::Midpoint,
-                                                RootMethod::Midpoint.label(),
-                                            )
-                                            .changed();
-                                    });
-                                changed
-                            })
-                            .inner;
+                    let mut show_scale = self.tree_painter.show_scale_bar;
+                    if ui.checkbox(&mut show_scale, "").changed() {
+                        self.tree_painter.show_scale_bar = show_scale;
+                    }
 
-                        if combo_changed && self.root_method != method {
-                            self.record_undo_step();
-                            let previous_method = self.root_method;
-                            self.root_method = method;
-                            self.apply_root_configuration(Some(previous_method));
-                        }
+                    let label_response = ui.add(
+                        egui::Label::new(egui::RichText::new("Scale Bar").strong())
+                            .sense(egui::Sense::click()),
+                    );
+                    if label_response.clicked() {
+                        scale_state.toggle(ui);
+                    }
 
-                        ui.separator();
+                    toggle
+                });
 
-                        // Order nodes checkbox and combobox
-                        let mut order_enabled = self.order_nodes_enabled;
-                        if ui.checkbox(&mut order_enabled, "Order nodes").changed() {
-                            self.record_undo_step();
-                            let previous_enabled = self.order_nodes_enabled;
-                            self.order_nodes_enabled = order_enabled;
+                scale_state.show_body_indented(&scale_header_response.response, ui, |_ui| {});
+                self.panel_states.scale_bar_expanded = scale_state.is_open();
 
-                            if order_enabled && !previous_enabled {
-                                // Apply ordering when enabling
-                                let increasing = matches!(self.node_ordering, NodeOrdering::Increasing);
-                                self.tree_viewer.apply_node_ordering(increasing);
-                            } else if !order_enabled && previous_enabled {
-                                // Restore unordered tree when disabling
-                                self.tree_viewer.restore_unordered_tree();
-                            }
-                        }
+                let newly_opened = if !prev_panel_states.layout_expanded && self.panel_states.layout_expanded {
+                    Some(ControlSection::Layout)
+                } else if !prev_panel_states.trees_expanded && self.panel_states.trees_expanded {
+                    Some(ControlSection::Trees)
+                } else if !prev_panel_states.appearance_expanded
+                    && self.panel_states.appearance_expanded
+                {
+                    Some(ControlSection::Appearance)
+                } else if !prev_panel_states.tip_labels_expanded
+                    && self.panel_states.tip_labels_expanded
+                {
+                    Some(ControlSection::LabelsTip)
+                } else if !prev_panel_states.node_labels_expanded
+                    && self.panel_states.node_labels_expanded
+                {
+                    Some(ControlSection::LabelsNode)
+                } else if !prev_panel_states.branch_labels_expanded
+                    && self.panel_states.branch_labels_expanded
+                {
+                    Some(ControlSection::LabelsBranch)
+                } else if !prev_panel_states.tip_shapes_expanded
+                    && self.panel_states.tip_shapes_expanded
+                {
+                    Some(ControlSection::ShapesTip)
+                } else if !prev_panel_states.node_shapes_expanded
+                    && self.panel_states.node_shapes_expanded
+                {
+                    Some(ControlSection::ShapesNode)
+                } else if !prev_panel_states.node_bars_expanded
+                    && self.panel_states.node_bars_expanded
+                {
+                    Some(ControlSection::NodeBars)
+                } else if !prev_panel_states.scale_bar_expanded
+                    && self.panel_states.scale_bar_expanded
+                {
+                    Some(ControlSection::ScaleBar)
+                } else {
+                    None
+                };
 
-                        ui.horizontal(|ui| {
-                            ui.label("Ordering:");
-                            let mut ordering = self.node_ordering;
-                            ui.add_enabled_ui(self.order_nodes_enabled, |ui| {
-                                egui::ComboBox::from_id_salt("node_ordering")
-                                    .selected_text(ordering.label())
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut ordering,
-                                            NodeOrdering::Increasing,
-                                            NodeOrdering::Increasing.label(),
-                                        );
-                                        ui.selectable_value(
-                                            &mut ordering,
-                                            NodeOrdering::Decreasing,
-                                            NodeOrdering::Decreasing.label(),
-                                        );
-                                    });
-                            });
-                            if self.order_nodes_enabled && ordering != self.node_ordering {
-                                self.record_undo_step();
-                                self.node_ordering = ordering;
-                                // Apply ordering when changed
-                                let increasing = matches!(ordering, NodeOrdering::Increasing);
-                                self.tree_viewer.apply_node_ordering(increasing);
-                            }
-                        });
-
-                        ui.separator();
-
-                        // Transform branches checkbox and combobox
-                        let mut transform_enabled = self.transform_branches_enabled;
-                        if ui.checkbox(&mut transform_enabled, "Transform branches").changed() {
-                            self.transform_branches_enabled = transform_enabled;
-                        }
-
-                        ui.horizontal(|ui| {
-                            ui.label("Transform:");
-                            let mut transform = self.branch_transform;
-                            ui.add_enabled_ui(self.transform_branches_enabled, |ui| {
-                                egui::ComboBox::from_id_salt("branch_transform")
-                                    .selected_text(transform.label())
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut transform,
-                                            BranchTransform::Equal,
-                                            BranchTransform::Equal.label(),
-                                        );
-                                        ui.selectable_value(
-                                            &mut transform,
-                                            BranchTransform::Cladogram,
-                                            BranchTransform::Cladogram.label(),
-                                        );
-                                        ui.selectable_value(
-                                            &mut transform,
-                                            BranchTransform::Proportional,
-                                            BranchTransform::Proportional.label(),
-                                        );
-                                    });
-                            });
-                            if transform != self.branch_transform {
-                                self.branch_transform = transform;
-                            }
-                        });
-                    });
-                if trees_response.header_response.clicked() {
-                    self.panel_states.trees_expanded = !self.panel_states.trees_expanded;
+                if let Some(section) = newly_opened {
+                    self.panel_states.expand_only(section);
                 }
+
                     }); // End of ScrollArea
             });
 
