@@ -844,10 +844,21 @@ impl FigTreeGui {
         }
     }
 
+    fn default_export_file_name(&self, extension: &str) -> String {
+        let base = self
+            .rtr_save_path
+            .as_ref()
+            .or(self.config.tree_path.as_ref())
+            .and_then(|p| p.file_stem().and_then(|s| s.to_str()))
+            .filter(|s| !s.is_empty())
+            .unwrap_or("tree");
+        format!("{base}.{extension}")
+    }
+
     fn export_png_dialog(&mut self, _ctx: &egui::Context) {
         if let Some(path) = FileDialog::new()
             .add_filter("PNG Image", &["png"])
-            .set_file_name("tree.png")
+            .set_file_name(&self.default_export_file_name("png"))
             .save_file()
         {
             self.export_raster_format(&path, ExportFormat::Png);
@@ -857,7 +868,7 @@ impl FigTreeGui {
     fn export_jpeg_dialog(&mut self, _ctx: &egui::Context) {
         if let Some(path) = FileDialog::new()
             .add_filter("JPEG Image", &["jpg", "jpeg"])
-            .set_file_name("tree.jpg")
+            .set_file_name(&self.default_export_file_name("jpg"))
             .save_file()
         {
             self.export_raster_format(&path, ExportFormat::Jpeg);
@@ -867,7 +878,7 @@ impl FigTreeGui {
     fn export_svg_dialog(&mut self) {
         if let Some(path) = FileDialog::new()
             .add_filter("SVG Image", &["svg"])
-            .set_file_name("tree.svg")
+            .set_file_name(&self.default_export_file_name("svg"))
             .save_file()
         {
             // For SVG, we export directly without screenshot
@@ -878,7 +889,7 @@ impl FigTreeGui {
     fn export_pdf_dialog(&mut self) {
         if let Some(path) = FileDialog::new()
             .add_filter("PDF Document", &["pdf"])
-            .set_file_name("tree.pdf")
+            .set_file_name(&self.default_export_file_name("pdf"))
             .save_file()
         {
             // For PDF, we export directly without screenshot
