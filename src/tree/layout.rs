@@ -1,5 +1,5 @@
 use super::{NodeId, Tree};
-use eframe::egui::{self, FontFamily, FontId, Painter};
+use eframe::egui::{self, FontFamily};
 
 mod circular;
 mod cladogram;
@@ -84,11 +84,6 @@ impl TreeLayout {
             TreeLayoutType::Phylogram => Self::phylogram_layout(tree),
             TreeLayoutType::Daylight => Self::daylight_layout(tree),
         }
-    }
-
-    /// Default layout (rectangular phylogram)
-    pub fn from_tree_default(tree: &Tree) -> Option<Self> {
-        Self::from_tree(tree, TreeLayoutType::Rectangular)
     }
 
     fn rectangular_layout(tree: &Tree) -> Option<Self> {
@@ -332,87 +327,6 @@ impl TreeLayout {
         )
     }
 
-    fn calculate_tip_label_bounds(
-        &self,
-        tree: &Tree,
-        painter: &Painter,
-        font_id: FontId,
-    ) -> egui::Rect {
-        let mut bounds = egui::Rect::NOTHING;
-
-        for node in &tree.nodes {
-            if !node.is_leaf() {
-                continue;
-            }
-
-            let Some(label) = &node.name else {
-                continue;
-            };
-
-            let node_pos = self.positions[node.id];
-            let label_bounds = self.calculate_single_tip_label_bounds(
-                tree,
-                node,
-                label,
-                node_pos,
-                painter,
-                font_id.clone(),
-            );
-
-            bounds = bounds.union(label_bounds);
-        }
-
-        if bounds == egui::Rect::NOTHING {
-            bounds =
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(self.width, self.height));
-        }
-
-        bounds
-    }
-
-    fn calculate_single_tip_label_bounds(
-        &self,
-        tree: &Tree,
-        node: &crate::tree::TreeNode,
-        label: &str,
-        node_pos: (f32, f32),
-        painter: &Painter,
-        font_id: FontId,
-    ) -> egui::Rect {
-        let node_screen_pos = egui::pos2(node_pos.0, node_pos.1);
-
-        match self.layout_type {
-            TreeLayoutType::Circular => {
-                // Calculate bounds for circular layout with rotation
-                let angle = self.calculate_circular_label_angle(tree, node);
-                self.calculate_rotated_label_bounds(
-                    node_screen_pos,
-                    label,
-                    painter,
-                    font_id,
-                    angle,
-                    12.0,
-                )
-            }
-            TreeLayoutType::Radial => {
-                // Calculate bounds for radial layout with rotation
-                let angle = self.calculate_radial_label_angle(tree, node);
-                self.calculate_rotated_label_bounds(
-                    node_screen_pos,
-                    label,
-                    painter,
-                    font_id,
-                    angle,
-                    8.0,
-                )
-            }
-            _ => {
-                // For other layouts, labels are placed to the right
-                self.calculate_right_label_bounds(node_screen_pos, label, painter, font_id)
-            }
-        }
-    }
-
     fn calculate_circular_label_angle(&self, tree: &Tree, node: &crate::tree::TreeNode) -> f32 {
         const EPS2: f32 = 1e-10;
         let child = self.positions[node.id];
@@ -559,43 +473,6 @@ impl TreeLayout {
         Some(base_angle + offset)
     }
 
-    fn calculate_rotated_label_bounds(
-        &self,
-        node_pos: egui::Pos2,
-        label: &str,
-        painter: &Painter,
-        font_id: FontId,
-        angle: f32,
-        offset_distance: f32,
-    ) -> egui::Rect {
-        let galley = painter.layout_no_wrap(label.to_string(), font_id, egui::Color32::BLACK);
-        let text_size = galley.size();
-
-        // Calculate label position
-        let direction_x = angle.cos();
-        let direction_y = angle.sin();
-        let label_offset = egui::vec2(offset_distance * direction_x, offset_distance * direction_y);
-        let label_pos = node_pos + label_offset;
-
-        // Handle text rotation and anchor
-        let angle_deg = angle.to_degrees();
-        let normalized_angle_deg = if angle_deg < 0.0 {
-            angle_deg + 360.0
-        } else {
-            angle_deg
-        };
-
-        let (text_rotation_angle, text_anchor) =
-            if normalized_angle_deg > 90.0 && normalized_angle_deg < 270.0 {
-                (angle + std::f32::consts::PI, egui::Align2::RIGHT_CENTER)
-            } else {
-                (angle, egui::Align2::LEFT_CENTER)
-            };
-
-        // Calculate rotated text bounds
-        self.calculate_rotated_text_bounds(label_pos, text_size, text_rotation_angle, text_anchor)
-    }
-
     fn calculate_rotated_text_bounds(
         &self,
         pos: egui::Pos2,
@@ -648,19 +525,6 @@ impl TreeLayout {
         )
     }
 
-    fn calculate_right_label_bounds(
-        &self,
-        node_pos: egui::Pos2,
-        label: &str,
-        painter: &Painter,
-        font_id: FontId,
-    ) -> egui::Rect {
-        let galley = painter.layout_no_wrap(label.to_string(), font_id, egui::Color32::BLACK);
-        let text_size = galley.size();
-        let text_pos = node_pos + egui::vec2(8.0, 0.0);
-
-        egui::Rect::from_min_size(text_pos + egui::vec2(0.0, -text_size.y * 0.5), text_size)
-    }
 }
 
 pub(super) fn normalize_positions(positions: &mut [(f32, f32)]) -> (f32, f32) {

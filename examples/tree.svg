@@ -1,0 +1,76 @@
+<svg height="900" viewBox="0 0 1200 900" width="1200" xmlns="http://www.w3.org/2000/svg">
+<rect fill="#FFFFFF" fill-opacity="1" height="900" width="1200" x="0" y="0"/>
+<rect fill="#FFFFFF" fill-opacity="1" height="820" width="1080" x="60" y="40"/>
+<rect fill="#FFFFB4" fill-opacity="1" height="229.37062" width="539.16266" x="195.83736" y="57.2028"/>
+<rect fill="#B4DAFF" fill-opacity="1" height="229.3706" width="582.78" x="152.21999" y="515.9441"/>
+<path d="M 98.19752 286.57343 L 60 286.57343 L 60 458.60138" fill="none" stroke="#000000" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" stroke-width="2"/>
+<path d="M 293.47717 171.88812 L 98.19752 171.88812 L 98.19752 286.57343" fill="none" stroke="#000000" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" stroke-width="2"/>
+<path d="M 735 114.545456 L 293.47717 114.545456 L 293.47717 171.88812" fill="none" stroke="#000000" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" stroke-width="2"/>
+<path d="M 735 229.23077 L 293.47717 229.23077 L 293.47717 171.88812" fill="none" stroke="#000000" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" stroke-width="2"/>
+<path d="M 216.48438 401.25873 L 98.19752 401.25873 L 98.19752 286.57343" fill="none" stroke="#2C4D81" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" stroke-width="2"/>
+<path d="M 735 343.91608 L 216.48438 343.91608 L 216.48438 401.25873" fill="none" stroke="#2C4D81" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" stroke-width="2"/>
+<path d="M 735 458.60138 L 216.48438 458.60138 L 216.48438 401.25873" fill="none" stroke="#2C4D81" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" stroke-width="2"/>
+<path d="M 244.43997 630.62933 L 60 630.62933 L 60 458.60138" fill="none" stroke="#000000" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" stroke-width="2"/>
+<path d="M 735 573.2867 L 244.43997 573.2867 L 244.43997 630.62933" fill="none" stroke="#000000" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" stroke-width="2"/>
+<path d="M 735 687.972 L 244.43997 687.972 L 244.43997 630.62933" fill="none" stroke="#000000" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" stroke-width="2"/>
+<rect fill="#264964" fill-opacity="0.39215687" height="10" width="61.41716" x="29.291422" y="453.60138"/>
+<rect fill="#264964" fill-opacity="0.39215687" height="10" width="9.121353" x="93.63684" y="281.57343"/>
+<rect fill="#264964" fill-opacity="0.39215687" height="10" width="278.20148" x="154.37643" y="166.88812"/>
+<rect fill="#264964" fill-opacity="0.39215687" height="10" width="30.10048" x="201.43413" y="396.25873"/>
+<rect fill="#264964" fill-opacity="0.39215687" height="10" width="271.9685" x="108.4557" y="625.62933"/>
+<rect fill="#469DCF" fill-opacity="0.90588236" height="8" width="8" x="56" y="454.60138"/>
+<text dominant-baseline="middle" fill="#000000" fill-opacity="1" font-size="10" text-anchor="start" x="68" y="458.60138">
+
+[4.23,4.63]
+</text>
+<rect fill="#469DCF" fill-opacity="0.90588236" height="8" width="8" x="94.19752" y="282.57343"/>
+<text dominant-baseline="middle" fill="#000000" fill-opacity="1" font-size="10" text-anchor="start" x="106.19752" y="286.57343">
+
+[4.16,4.22]
+</text>
+<rect fill="#469DCF" fill-opacity="0.90588236" height="8" width="8" x="289.47717" y="167.88812"/>
+<text dominant-baseline="middle" fill="#000000" fill-opacity="1" font-size="10" text-anchor="start" x="301.47717" y="171.88812">
+
+[1.91,3.74]
+</text>
+<polygon fill="#FFCD8C" fill-opacity="1" points="735,110.545456 739,114.545456 735,118.545456 731,114.545456"/>
+<text dominant-baseline="middle" fill="#C70000" fill-opacity="1" font-size="13" text-anchor="start" x="743" y="114.545456">
+
+aaa
+</text>
+<polygon fill="#FFCD8C" fill-opacity="1" points="735,225.23077 739,229.23077 735,233.23077 731,229.23077"/>
+<text dominant-baseline="middle" fill="#C70000" fill-opacity="1" font-size="13" text-anchor="start" x="743" y="229.23077">
+
+Fugu
+</text>
+<rect fill="#469DCF" fill-opacity="0.90588236" height="8" width="8" x="212.48438" y="397.25873"/>
+<text dominant-baseline="middle" fill="#000000" fill-opacity="1" font-size="10" text-anchor="start" x="224.48438" y="401.25873">
+
+[3.30,3.50]
+</text>
+<polygon fill="#FFCD8C" fill-opacity="1" points="735,339.91608 739,343.91608 735,347.91608 731,343.91608"/>
+<text dominant-baseline="middle" fill="#000000" fill-opacity="1" font-size="13" text-anchor="start" x="743" y="343.91608">
+
+Frog
+</text>
+<polygon fill="#FFCD8C" fill-opacity="1" points="735,454.60138 739,458.60138 735,462.60138 731,458.60138"/>
+<text dominant-baseline="middle" fill="#000000" fill-opacity="1" font-size="13" text-anchor="start" x="743" y="458.60138">
+
+Human
+</text>
+<rect fill="#469DCF" fill-opacity="0.90588236" height="8" width="8" x="240.43997" y="626.62933"/>
+<text dominant-baseline="middle" fill="#000000" fill-opacity="1" font-size="10" text-anchor="start" x="252.43997" y="630.62933">
+
+[2.27,4.06]
+</text>
+<polygon fill="#FFCD8C" fill-opacity="1" points="735,569.2867 739,573.2867 735,577.2867 731,573.2867"/>
+<text dominant-baseline="middle" fill="#000000" fill-opacity="1" font-size="13" text-anchor="start" x="743" y="573.2867">
+
+Shark
+</text>
+<polygon fill="#FFCD8C" fill-opacity="1" points="735,683.972 739,687.972 735,691.972 731,687.972"/>
+<text dominant-baseline="middle" fill="#000000" fill-opacity="1" font-size="13" text-anchor="start" x="743" y="687.972">
+
+Stingray
+</text>
+</svg>

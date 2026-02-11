@@ -18,7 +18,6 @@ struct DaylightNode {
 
 #[derive(Debug, Clone)]
 struct SubtreeInfo {
-    subtree_id: usize,
     left_angle: f32,
     beta: f32, // arc angle occupied by subtree
     nodes: Vec<NodeId>,
@@ -261,7 +260,7 @@ fn apply_daylight_to_node(tree: &Tree, node_id: NodeId, geometry: &mut [Daylight
 
     // Get subtree information for each child
     let mut subtrees = Vec::new();
-    for (index, &child_id) in node.children.iter().enumerate() {
+    for &child_id in &node.children {
         let nodes = collect_subtree_nodes(tree, child_id);
         let (left_angle, right_angle) = get_subtree_arc_angles(geometry, &nodes);
 
@@ -271,7 +270,6 @@ fn apply_daylight_to_node(tree: &Tree, node_id: NodeId, geometry: &mut [Daylight
         }
 
         subtrees.push(SubtreeInfo {
-            subtree_id: index,
             left_angle,
             beta,
             nodes,

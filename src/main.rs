@@ -2,7 +2,6 @@ mod app;
 mod export;
 mod gui;
 mod io;
-mod rotated_text;
 mod tree;
 mod ui;
 
