@@ -1666,10 +1666,19 @@ impl FigTreeGui {
                 let width = base_width * zoom * export_scale;
                 let height = base_height * expansion * zoom * export_scale;
 
+                // Scale geometry-sensitive painter parameters for high-resolution raster export.
+                // This keeps node bars and tip/node shape sizes visually consistent with line/text scaling.
+                let mut export_painter = self.tree_painter.clone();
+                export_painter.node_bar_thickness *= export_scale;
+                export_painter.tip_shape_max_size *= export_scale;
+                export_painter.tip_shape_min_size *= export_scale;
+                export_painter.node_shape_max_size *= export_scale;
+                export_painter.node_shape_min_size *= export_scale;
+
                 let mut scene = crate::export::svg::build_export_scene(
                     &tree,
                     &layout,
-                    &self.tree_painter,
+                    &export_painter,
                     width,
                     height,
                 );
@@ -1677,9 +1686,6 @@ impl FigTreeGui {
                     match primitive {
                         crate::tree::scene_graph::ScenePrimitive::Text { size, .. } => {
                             *size *= export_scale;
-                        }
-                        crate::tree::scene_graph::ScenePrimitive::FillCircle { radius, .. } => {
-                            *radius *= export_scale;
                         }
                         crate::tree::scene_graph::ScenePrimitive::StrokeLine { style, .. }
                         | crate::tree::scene_graph::ScenePrimitive::StrokePolyline { style, .. }
@@ -3556,11 +3562,6 @@ impl eframe::App for FigTreeGui {
                             .show_value(false),
                         );
 
-                        ui.label("Node Size:");
-                        ui.add(
-                            egui::Slider::new(&mut self.tree_painter.node_radius, 1.0..=10.0)
-                                .show_value(false),
-                        );
                     });
                 if appearance_response.header_response.clicked() {
                     self.panel_states.appearance_expanded = !self.panel_states.appearance_expanded;
