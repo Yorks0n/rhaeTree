@@ -174,6 +174,11 @@ pub struct TreePainter {
     pub node_bar_thickness: f32,
     pub align_tip_labels: bool,
     pub tip_label_display: TipLabelDisplay,
+    pub node_label_display: NodeLabelDisplay,
+    pub node_label_attribute: Option<String>,
+    pub node_label_font_size: f32,
+    pub node_label_format: TipLabelNumberFormat,
+    pub node_label_precision: usize,
     pub tip_label_font_family: TipLabelFontFamily,
     pub tip_label_font_size: f32,
     pub tip_label_format: TipLabelNumberFormat,
@@ -182,18 +187,6 @@ pub struct TreePainter {
     branch_color_overrides: HashMap<NodeId, Color32>,
     tip_label_color_overrides: HashMap<NodeId, Color32>,
     highlighted_clades: HashMap<NodeId, Color32>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum NodeBarAxisMapping {
-    Direct,
-    Reversed,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct NodeBarValueMapper {
-    mapping: NodeBarAxisMapping,
-    layout_width: f32,
 }
 
 impl Default for TreePainter {
@@ -236,10 +229,15 @@ impl Default for TreePainter {
             node_bar_thickness: 10.0,
             align_tip_labels: false,
             tip_label_display: TipLabelDisplay::Labels,
+            node_label_display: NodeLabelDisplay::Labels,
+            node_label_attribute: None,
+            node_label_font_size: 10.0,
+            node_label_format: TipLabelNumberFormat::Decimal,
+            node_label_precision: 2,
             tip_label_font_family: TipLabelFontFamily::Proportional,
             tip_label_font_size: 13.0,
             tip_label_format: TipLabelNumberFormat::Decimal,
-            tip_label_precision: 4,
+            tip_label_precision: 2,
             tip_selection_color: Color32::from_rgba_unmultiplied(120, 170, 255, 150),
             branch_color_overrides: HashMap::new(),
             tip_label_color_overrides: HashMap::new(),
@@ -410,130 +408,6 @@ impl TreePainter {
 
     pub fn node_bar_thickness(&self) -> f32 {
         self.node_bar_thickness
-    }
-
-    pub(crate) fn infer_node_bar_mapper(
-        &self,
-        tree: &Tree,
-        layout: &TreeLayout,
-        field: &str,
-    ) -> NodeBarValueMapper {
-        let layout_width = layout.width.max(1e-6);
-        let mut samples: Vec<(f32, f32, f32)> = Vec::new();
-        let mut global_min = f32::INFINITY;
-        let mut global_max = f32::NEG_INFINITY;
-
-        for node in &tree.nodes {
-            let Some((mut min, mut max)) = node.numeric_range_attribute(field) else {
-                continue;
-            };
-            if !min.is_finite() || !max.is_finite() {
-                continue;
-            }
-            if min > max {
-                std::mem::swap(&mut min, &mut max);
-            }
-
-            let min = min as f32;
-            let max = max as f32;
-            let node_x = layout.positions[node.id].0;
-            if !min.is_finite() || !max.is_finite() || !node_x.is_finite() {
-                continue;
-            }
-
-            global_min = global_min.min(min);
-            global_max = global_max.max(max);
-            samples.push((node_x, min, max));
-        }
-
-        if samples.is_empty() {
-            return NodeBarValueMapper {
-                mapping: NodeBarAxisMapping::Direct,
-                layout_width,
-            };
-        }
-
-        let value_span = (global_max - global_min).abs().max(1e-6);
-        let candidates = [NodeBarAxisMapping::Direct, NodeBarAxisMapping::Reversed];
-
-        let mut best = NodeBarAxisMapping::Direct;
-        let mut best_score = f32::INFINITY;
-
-        for candidate in candidates {
-            let score = Self::node_bar_mapping_score(
-                candidate,
-                &samples,
-                layout_width,
-                global_min,
-                value_span,
-            );
-            if score < best_score {
-                best_score = score;
-                best = candidate;
-            }
-        }
-
-        NodeBarValueMapper {
-            mapping: best,
-            layout_width,
-        }
-    }
-
-    pub(crate) fn map_node_bar_interval(
-        &self,
-        mapper: NodeBarValueMapper,
-        mut min: f64,
-        mut max: f64,
-    ) -> Option<(f32, f32)> {
-        if !min.is_finite() || !max.is_finite() {
-            return None;
-        }
-        if min > max {
-            std::mem::swap(&mut min, &mut max);
-        }
-
-        let a = Self::map_node_bar_value(mapper, min as f32);
-        let b = Self::map_node_bar_value(mapper, max as f32);
-        let left = a.min(b);
-        let right = a.max(b);
-        Some((left, right.max(left + 1e-3)))
-    }
-
-    fn node_bar_mapping_score(
-        mapping: NodeBarAxisMapping,
-        samples: &[(f32, f32, f32)],
-        layout_width: f32,
-        _value_min: f32,
-        _value_span: f32,
-    ) -> f32 {
-        let mapper = NodeBarValueMapper {
-            mapping,
-            layout_width,
-        };
-
-        let mut total = 0.0f32;
-        for (node_x, min, max) in samples {
-            let a = Self::map_node_bar_value(mapper, *min);
-            let b = Self::map_node_bar_value(mapper, *max);
-            let left = a.min(b).clamp(0.0, layout_width);
-            let right = a.max(b).clamp(0.0, layout_width);
-            let dist = if *node_x < left {
-                left - *node_x
-            } else if *node_x > right {
-                *node_x - right
-            } else {
-                0.0
-            };
-            total += dist;
-        }
-        total / samples.len() as f32
-    }
-
-    fn map_node_bar_value(mapper: NodeBarValueMapper, value: f32) -> f32 {
-        match mapper.mapping {
-            NodeBarAxisMapping::Direct => value,
-            NodeBarAxisMapping::Reversed => mapper.layout_width - value,
-        }
     }
 
     pub fn branch_color_override(&self, node_id: NodeId) -> Option<Color32> {
@@ -1465,6 +1339,14 @@ impl TreePainter {
             }
         }
 
+        let node_heights = if self.show_node_labels
+            && matches!(self.node_label_display, NodeLabelDisplay::NodeHeight)
+        {
+            Some(self.compute_node_heights(tree))
+        } else {
+            None
+        };
+
         // Paint nodes
         for node in &tree.nodes {
             let pos = to_screen(layout.positions[node.id]);
@@ -1591,13 +1473,13 @@ impl TreePainter {
                     }
                 }
             } else if self.show_node_labels {
-                if let Some(label) = &node.name {
+                if let Some(label) = self.node_label_text(tree, node, node_heights.as_ref()) {
                     let text_pos = pos + egui::vec2(8.0, 0.0);
                     painter.text(
                         text_pos,
                         egui::Align2::LEFT_CENTER,
                         label,
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(self.node_label_font_size),
                         self.label_color,
                     );
                 }
@@ -1652,7 +1534,6 @@ impl TreePainter {
             | TreeLayoutType::Phylogram
             | TreeLayoutType::Slanted
             | TreeLayoutType::Daylight => {
-                let mapper = self.infer_node_bar_mapper(tree, layout, field);
                 for node in &tree.nodes {
                     let Some((mut min, mut max)) = node.numeric_range_attribute(field) else {
                         continue;
@@ -1667,12 +1548,9 @@ impl TreePainter {
                     }
 
                     let y_world = layout.positions[node.id].1;
-                    let Some((x0, x1)) = self.map_node_bar_interval(mapper, min, max) else {
-                        continue;
-                    };
                     // Keep bar midpoint anchored to the corresponding node position.
                     let node_x = layout.positions[node.id].0;
-                    let half_width = ((x1 - x0).abs() * 0.5).max(0.5);
+                    let half_width = ((max - min).abs() as f32) * 0.5;
                     let x0 = node_x - half_width;
                     let x1 = node_x + half_width;
                     let start = to_screen((x0, y_world));
@@ -1695,6 +1573,57 @@ impl TreePainter {
                     );
 
                     painter.rect_filled(rect, 2.0, self.node_bar_color);
+                }
+            }
+            TreeLayoutType::Circular => {
+                let center_world = tree
+                    .root
+                    .map(|root_id| layout.positions[root_id])
+                    .unwrap_or((layout.width * 0.5, layout.height * 0.5));
+
+                for node in &tree.nodes {
+                    let Some((mut min, mut max)) = node.numeric_range_attribute(field) else {
+                        continue;
+                    };
+
+                    if !min.is_finite() || !max.is_finite() {
+                        continue;
+                    }
+                    if min > max {
+                        std::mem::swap(&mut min, &mut max);
+                    }
+
+                    let node_pos = layout.positions[node.id];
+                    let mut dir_x = node_pos.0 - center_world.0;
+                    let mut dir_y = node_pos.1 - center_world.1;
+                    let len = (dir_x * dir_x + dir_y * dir_y).sqrt();
+                    if len <= 1e-6 {
+                        if let Some(parent_id) = node.parent {
+                            let parent = layout.positions[parent_id];
+                            dir_x = node_pos.0 - parent.0;
+                            dir_y = node_pos.1 - parent.1;
+                        } else {
+                            dir_x = 1.0;
+                            dir_y = 0.0;
+                        }
+                    }
+                    let norm = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1e-6);
+                    let ux = dir_x / norm;
+                    let uy = dir_y / norm;
+
+                    let node_radius =
+                        ((node_pos.0 - center_world.0).powi(2) + (node_pos.1 - center_world.1).powi(2))
+                            .sqrt();
+                    let half_width = ((max - min).abs() as f32) * 0.5;
+                    let r0 = (node_radius - half_width).max(0.0);
+                    let r1 = (node_radius + half_width).max(0.0);
+
+                    let start = to_screen((center_world.0 + ux * r0, center_world.1 + uy * r0));
+                    let end = to_screen((center_world.0 + ux * r1, center_world.1 + uy * r1));
+                    painter.line_segment(
+                        [start, end],
+                        Stroke::new(self.node_bar_thickness.max(0.5), self.node_bar_color),
+                    );
                 }
             }
             _ => {}
@@ -1897,23 +1826,110 @@ impl TreePainter {
         match self.tip_label_display {
             TipLabelDisplay::Names => node.name.clone(),
             TipLabelDisplay::Labels => node.label.clone().or_else(|| node.name.clone()),
-            TipLabelDisplay::BranchLength => node.length.map(|value| self.format_numeric(value)),
+            TipLabelDisplay::BranchLength => node.length.map(|value| {
+                Self::format_numeric_with(value, self.tip_label_format, self.tip_label_precision)
+            }),
         }
     }
 
-    fn format_numeric(&self, value: f64) -> String {
-        match self.tip_label_format {
+    pub fn node_label_text(
+        &self,
+        tree: &Tree,
+        node: &TreeNode,
+        node_heights: Option<&HashMap<NodeId, f64>>,
+    ) -> Option<String> {
+        match self.node_label_display {
+            NodeLabelDisplay::Names => node.name.clone(),
+            NodeLabelDisplay::Labels => node.label.clone().or_else(|| node.name.clone()),
+            NodeLabelDisplay::BranchLength => node.length.map(|value| {
+                Self::format_numeric_with(value, self.node_label_format, self.node_label_precision)
+            }),
+            NodeLabelDisplay::NodeHeight => {
+                let height = node_heights
+                    .and_then(|map| map.get(&node.id).copied())
+                    .unwrap_or_else(|| self.node_height_fallback(tree, node.id));
+                Some(Self::format_numeric_with(
+                    height,
+                    self.node_label_format,
+                    self.node_label_precision,
+                ))
+            }
+            NodeLabelDisplay::Attribute => {
+                let key = self.node_label_attribute.as_deref()?;
+                if let Some((min, max)) = node.numeric_range_attribute(key) {
+                    let min_text =
+                        Self::format_numeric_with(min, self.node_label_format, self.node_label_precision);
+                    let max_text =
+                        Self::format_numeric_with(max, self.node_label_format, self.node_label_precision);
+                    if (max - min).abs() <= f64::EPSILON {
+                        Some(min_text)
+                    } else {
+                        Some(format!("[{min_text},{max_text}]"))
+                    }
+                } else if let Some(value) = node.get_numeric_attribute(key) {
+                    Some(Self::format_numeric_with(
+                        value,
+                        self.node_label_format,
+                        self.node_label_precision,
+                    ))
+                } else {
+                    node.get_attribute(key).cloned()
+                }
+            }
+        }
+    }
+
+    pub fn compute_node_heights(&self, tree: &Tree) -> HashMap<NodeId, f64> {
+        let mut heights = HashMap::new();
+        fn dfs(tree: &Tree, node_id: NodeId, out: &mut HashMap<NodeId, f64>) -> f64 {
+            let node = &tree.nodes[node_id];
+            if node.children.is_empty() {
+                out.insert(node_id, 0.0);
+                return 0.0;
+            }
+            let mut max_h = 0.0f64;
+            for &child_id in &node.children {
+                let len = tree.nodes[child_id].length.unwrap_or(1.0);
+                let child_h = dfs(tree, child_id, out);
+                max_h = max_h.max(child_h + len);
+            }
+            out.insert(node_id, max_h);
+            max_h
+        }
+        if let Some(root_id) = tree.root {
+            dfs(tree, root_id, &mut heights);
+        }
+        heights
+    }
+
+    fn node_height_fallback(&self, tree: &Tree, node_id: NodeId) -> f64 {
+        fn dist_to_tip(tree: &Tree, node_id: NodeId) -> f64 {
+            let node = &tree.nodes[node_id];
+            if node.children.is_empty() {
+                return 0.0;
+            }
+            node.children
+                .iter()
+                .map(|&child_id| tree.nodes[child_id].length.unwrap_or(1.0) + dist_to_tip(tree, child_id))
+                .fold(0.0f64, |a, b| a.max(b))
+        }
+        dist_to_tip(tree, node_id)
+    }
+
+    fn format_numeric_with(
+        value: f64,
+        format: TipLabelNumberFormat,
+        precision: usize,
+    ) -> String {
+        match format {
             TipLabelNumberFormat::Decimal => {
-                let precision = self.tip_label_precision;
                 format!("{value:.precision$}")
             }
             TipLabelNumberFormat::Scientific => {
-                let precision = self.tip_label_precision;
                 format!("{value:.precision$e}")
             }
             TipLabelNumberFormat::Percentage => {
                 let percent = value * 100.0;
-                let precision = self.tip_label_precision;
                 format!("{percent:.precision$}%")
             }
         }
@@ -3183,6 +3199,31 @@ impl TipLabelDisplay {
 
     pub fn is_numeric(self) -> bool {
         matches!(self, Self::BranchLength)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeLabelDisplay {
+    Names,
+    Labels,
+    BranchLength,
+    NodeHeight,
+    Attribute,
+}
+
+impl NodeLabelDisplay {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Names => "Names",
+            Self::Labels => "Labels",
+            Self::BranchLength => "Branch Length",
+            Self::NodeHeight => "Node Height",
+            Self::Attribute => "Attribute",
+        }
+    }
+
+    pub fn is_numeric(self) -> bool {
+        matches!(self, Self::BranchLength | Self::NodeHeight | Self::Attribute)
     }
 }
 

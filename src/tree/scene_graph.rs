@@ -281,44 +281,101 @@ pub fn build_tree_scene(
 
     if painter.show_node_bars {
         if let Some(field) = painter.node_bar_field() {
-            if matches!(
-                layout.layout_type,
+            match layout.layout_type {
                 TreeLayoutType::Rectangular
-                    | TreeLayoutType::Phylogram
-                    | TreeLayoutType::Slanted
-                    | TreeLayoutType::Daylight
-            ) {
-                let mapper = painter.infer_node_bar_mapper(tree, layout, field);
-                for node in &tree.nodes {
-                    let Some((mut min, mut max)) = node.numeric_range_attribute(field) else {
-                        continue;
-                    };
-                    if min > max {
-                        std::mem::swap(&mut min, &mut max);
+                | TreeLayoutType::Phylogram
+                | TreeLayoutType::Slanted
+                | TreeLayoutType::Daylight => {
+                    for node in &tree.nodes {
+                        let Some((mut min, mut max)) = node.numeric_range_attribute(field) else {
+                            continue;
+                        };
+                        if min > max {
+                            std::mem::swap(&mut min, &mut max);
+                        }
+                        let y = layout.positions[node.id].1;
+                        // Keep bar midpoint anchored to the corresponding node position.
+                        let node_x = layout.positions[node.id].0;
+                        let half_width = ((max - min).abs() as f32) * 0.5;
+                        let x0 = node_x - half_width;
+                        let x1 = node_x + half_width;
+                        let p0 = to_local(to_screen((x0, y)));
+                        let p1 = to_local(to_screen((x1, y)));
+                        let left = p0.x.min(p1.x);
+                        let right = p0.x.max(p1.x).max(left + 1.0);
+                        let yc = (p0.y + p1.y) * 0.5;
+                        let half = painter.node_bar_thickness().max(0.5) * 0.5;
+                        primitives.push(ScenePrimitive::FillRect {
+                            rect: Rect::from_min_max(
+                                Pos2::new(left, yc - half),
+                                Pos2::new(right, yc + half),
+                            ),
+                            color: painter.node_bar_color(),
+                        });
                     }
-                    let y = layout.positions[node.id].1;
-                    let Some((x0, x1)) = painter.map_node_bar_interval(mapper, min, max) else {
-                        continue;
-                    };
-                    // Keep bar midpoint anchored to the corresponding node position.
-                    let node_x = layout.positions[node.id].0;
-                    let half_width = ((x1 - x0).abs() * 0.5).max(0.5);
-                    let x0 = node_x - half_width;
-                    let x1 = node_x + half_width;
-                    let p0 = to_local(to_screen((x0, y)));
-                    let p1 = to_local(to_screen((x1, y)));
-                    let left = p0.x.min(p1.x);
-                    let right = p0.x.max(p1.x).max(left + 1.0);
-                    let yc = (p0.y + p1.y) * 0.5;
-                    let half = painter.node_bar_thickness().max(0.5) * 0.5;
-                    primitives.push(ScenePrimitive::FillRect {
-                        rect: Rect::from_min_max(
-                            Pos2::new(left, yc - half),
-                            Pos2::new(right, yc + half),
-                        ),
-                        color: painter.node_bar_color(),
-                    });
                 }
+                TreeLayoutType::Circular => {
+                    let center_world = tree
+                        .root
+                        .map(|root_id| layout.positions[root_id])
+                        .unwrap_or((layout.width * 0.5, layout.height * 0.5));
+                    for node in &tree.nodes {
+                        let Some((mut min, mut max)) = node.numeric_range_attribute(field) else {
+                            continue;
+                        };
+                        if !min.is_finite() || !max.is_finite() {
+                            continue;
+                        }
+                        if min > max {
+                            std::mem::swap(&mut min, &mut max);
+                        }
+
+                        let node_pos = layout.positions[node.id];
+                        let mut dir_x = node_pos.0 - center_world.0;
+                        let mut dir_y = node_pos.1 - center_world.1;
+                        let len = (dir_x * dir_x + dir_y * dir_y).sqrt();
+                        if len <= 1e-6 {
+                            if let Some(parent_id) = node.parent {
+                                let parent = layout.positions[parent_id];
+                                dir_x = node_pos.0 - parent.0;
+                                dir_y = node_pos.1 - parent.1;
+                            } else {
+                                dir_x = 1.0;
+                                dir_y = 0.0;
+                            }
+                        }
+                        let norm = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1e-6);
+                        let ux = dir_x / norm;
+                        let uy = dir_y / norm;
+
+                        let node_radius =
+                            ((node_pos.0 - center_world.0).powi(2)
+                                + (node_pos.1 - center_world.1).powi(2))
+                            .sqrt();
+                        let half_width = ((max - min).abs() as f32) * 0.5;
+                        let r0 = (node_radius - half_width).max(0.0);
+                        let r1 = (node_radius + half_width).max(0.0);
+
+                        let start = to_local(to_screen((
+                            center_world.0 + ux * r0,
+                            center_world.1 + uy * r0,
+                        )));
+                        let end = to_local(to_screen((
+                            center_world.0 + ux * r1,
+                            center_world.1 + uy * r1,
+                        )));
+                        primitives.push(ScenePrimitive::StrokeLine {
+                            from: start,
+                            to: end,
+                            style: StrokeStyle {
+                                width: painter.node_bar_thickness().max(0.5),
+                                color: painter.node_bar_color(),
+                                dash: None,
+                            },
+                        });
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -421,6 +478,13 @@ pub fn build_tree_scene(
     };
 
     let mut tip_label_hits = Vec::new();
+    let node_heights = if painter.show_node_labels
+        && matches!(painter.node_label_display, crate::tree::painter::NodeLabelDisplay::NodeHeight)
+    {
+        Some(painter.compute_node_heights(tree))
+    } else {
+        None
+    };
     for node in &tree.nodes {
         let mut p = to_local(to_screen(layout.positions[node.id]));
         if node.is_leaf() && painter.align_tip_labels {
@@ -577,13 +641,13 @@ pub fn build_tree_scene(
                 }
             }
         } else if painter.show_node_labels {
-            if let Some(name) = &node.name {
+            if let Some(name) = painter.node_label_text(tree, node, node_heights.as_ref()) {
                 primitives.push(ScenePrimitive::Text {
-                    text: name.clone(),
+                    text: name,
                     anchor: Pos2::new(p.x + 8.0, p.y),
                     angle: 0.0,
                     align: egui::Align2::LEFT_CENTER,
-                    size: 10.0,
+                    size: painter.node_label_font_size,
                     color: painter.label_color,
                 });
             }

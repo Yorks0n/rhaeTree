@@ -350,6 +350,16 @@ impl Tree {
         keys.into_iter().collect()
     }
 
+    pub fn node_attribute_keys(&self) -> Vec<String> {
+        let mut keys: BTreeSet<String> = BTreeSet::new();
+        for node in &self.nodes {
+            for key in node.attributes.keys() {
+                keys.insert(key.clone());
+            }
+        }
+        keys.into_iter().collect()
+    }
+
     pub fn node_numeric_range_keys(&self) -> Vec<String> {
         let mut keys: BTreeSet<String> = BTreeSet::new();
         for node in &self.nodes {

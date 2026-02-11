@@ -14,7 +14,7 @@ use rfd::FileDialog;
 use crate::app::{AppConfig, ExportFormat};
 use crate::io;
 use crate::tree::painter::{
-    ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelDisplay, TipLabelFontFamily,
+    NodeLabelDisplay, ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelDisplay, TipLabelFontFamily,
     TipLabelNumberFormat,
 };
 use crate::tree::skia_renderer::SkiaTreeRenderer;
@@ -440,6 +440,27 @@ fn tip_label_display_name(value: TipLabelDisplay) -> &'static str {
         TipLabelDisplay::Names => "names",
         TipLabelDisplay::Labels => "labels",
         TipLabelDisplay::BranchLength => "branch_length",
+    }
+}
+
+fn node_label_display_name(value: NodeLabelDisplay) -> &'static str {
+    match value {
+        NodeLabelDisplay::Names => "names",
+        NodeLabelDisplay::Labels => "labels",
+        NodeLabelDisplay::BranchLength => "branch_length",
+        NodeLabelDisplay::NodeHeight => "node_height",
+        NodeLabelDisplay::Attribute => "attribute",
+    }
+}
+
+fn parse_node_label_display(s: &str) -> Option<NodeLabelDisplay> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "names" => Some(NodeLabelDisplay::Names),
+        "labels" => Some(NodeLabelDisplay::Labels),
+        "branch_length" => Some(NodeLabelDisplay::BranchLength),
+        "node_height" => Some(NodeLabelDisplay::NodeHeight),
+        "attribute" => Some(NodeLabelDisplay::Attribute),
+        _ => None,
     }
 }
 
@@ -1119,6 +1140,29 @@ impl FigTreeGui {
             tip_label_display_name(self.tree_painter.tip_label_display).to_string(),
         );
         settings.insert(
+            "painter.nodeLabelDisplay".to_string(),
+            node_label_display_name(self.tree_painter.node_label_display).to_string(),
+        );
+        settings.insert(
+            "painter.nodeLabelAttribute".to_string(),
+            self.tree_painter
+                .node_label_attribute
+                .clone()
+                .unwrap_or_else(|| "null".to_string()),
+        );
+        settings.insert(
+            "painter.nodeLabelFontSize".to_string(),
+            format!("{:.6}", self.tree_painter.node_label_font_size),
+        );
+        settings.insert(
+            "painter.nodeLabelNumberFormat".to_string(),
+            tip_label_number_format_name(self.tree_painter.node_label_format).to_string(),
+        );
+        settings.insert(
+            "painter.nodeLabelPrecision".to_string(),
+            self.tree_painter.node_label_precision.to_string(),
+        );
+        settings.insert(
             "painter.tipLabelFontFamily".to_string(),
             tip_label_font_name(self.tree_painter.tip_label_font_family).to_string(),
         );
@@ -1398,6 +1442,34 @@ impl FigTreeGui {
             .and_then(|s| parse_tip_label_display(s))
         {
             self.tree_painter.tip_label_display = v;
+        }
+        if let Some(v) = settings
+            .get("painter.nodeLabelDisplay")
+            .and_then(|s| parse_node_label_display(s))
+        {
+            self.tree_painter.node_label_display = v;
+        }
+        if let Some(v) = settings.get("painter.nodeLabelAttribute") {
+            self.tree_painter.node_label_attribute =
+                (!v.eq_ignore_ascii_case("null")).then(|| v.to_string());
+        }
+        if let Some(v) = settings
+            .get("painter.nodeLabelFontSize")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.node_label_font_size = v.max(6.0);
+        }
+        if let Some(v) = settings
+            .get("painter.nodeLabelNumberFormat")
+            .and_then(|s| parse_tip_label_number_format(s))
+        {
+            self.tree_painter.node_label_format = v;
+        }
+        if let Some(v) = settings
+            .get("painter.nodeLabelPrecision")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            self.tree_painter.node_label_precision = v.min(12);
         }
         if let Some(v) = settings
             .get("painter.tipLabelFontFamily")
@@ -1897,6 +1969,14 @@ impl FigTreeGui {
         self.tree_painter.show_node_bars.hash(&mut hasher);
         self.tree_painter.align_tip_labels.hash(&mut hasher);
         self.tree_painter.tip_label_display.hash(&mut hasher);
+        self.tree_painter.node_label_display.hash(&mut hasher);
+        self.tree_painter.node_label_attribute.hash(&mut hasher);
+        self.tree_painter
+            .node_label_font_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter.node_label_format.hash(&mut hasher);
+        self.tree_painter.node_label_precision.hash(&mut hasher);
         self.tree_painter.tip_label_font_family.hash(&mut hasher);
         self.tree_painter
             .tip_label_font_size
@@ -3384,16 +3464,6 @@ impl eframe::App for FigTreeGui {
                                     crate::tree::layout::TreeLayoutType::Radial,
                                     "Radial",
                                 );
-                                ui.selectable_value(
-                                    &mut self.current_layout,
-                                    crate::tree::layout::TreeLayoutType::Slanted,
-                                    "Slanted",
-                                );
-                                ui.selectable_value(
-                                    &mut self.current_layout,
-                                    crate::tree::layout::TreeLayoutType::Daylight,
-                                    "Daylight",
-                                );
                             });
 
                         // Auto-disable Align Tip Labels when switching to unsupported layouts
@@ -3650,7 +3720,165 @@ impl eframe::App for FigTreeGui {
                     toggle
                 });
 
-                node_state.show_body_indented(&header_response.response, ui, |_ui| {});
+                node_state.show_body_indented(&header_response.response, ui, |ui| {
+                    ui.vertical(|ui| {
+                        let mut has_node_names = false;
+                        let mut has_node_labels = false;
+                        let mut attribute_fields: Vec<String> = self
+                            .tree_viewer
+                            .current_tree()
+                            .map(|t| {
+                                for n in &t.nodes {
+                                    if n.name.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+                                        has_node_names = true;
+                                    }
+                                    if n.label.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+                                        has_node_labels = true;
+                                    }
+                                }
+                                let mut keys = t.node_attribute_keys();
+                                if keys.is_empty() {
+                                    keys = t.node_numeric_attribute_keys();
+                                }
+                                keys
+                            })
+                            .unwrap_or_default();
+                        attribute_fields.sort();
+                        attribute_fields.dedup();
+
+                        if matches!(self.tree_painter.node_label_display, NodeLabelDisplay::Names)
+                            && !has_node_names
+                        {
+                            self.tree_painter.node_label_display = if has_node_labels {
+                                NodeLabelDisplay::Labels
+                            } else {
+                                NodeLabelDisplay::BranchLength
+                            };
+                        }
+                        if matches!(self.tree_painter.node_label_display, NodeLabelDisplay::Labels)
+                            && !has_node_labels
+                        {
+                            self.tree_painter.node_label_display = if has_node_names {
+                                NodeLabelDisplay::Names
+                            } else {
+                                NodeLabelDisplay::BranchLength
+                            };
+                        }
+
+                        ui.horizontal(|ui| {
+                            ui.label("Display:");
+                            let selected_text = match self.tree_painter.node_label_display {
+                                NodeLabelDisplay::Attribute => self
+                                    .tree_painter
+                                    .node_label_attribute
+                                    .as_deref()
+                                    .map(|k| format!("Attribute: {k}"))
+                                    .unwrap_or_else(|| "Attribute".to_string()),
+                                _ => self.tree_painter.node_label_display.label().to_string(),
+                            };
+                            egui::ComboBox::from_id_salt("node_labels_display")
+                                .selected_text(selected_text)
+                                .show_ui(ui, |ui| {
+                                    if has_node_names {
+                                        ui.selectable_value(
+                                            &mut self.tree_painter.node_label_display,
+                                            NodeLabelDisplay::Names,
+                                            "Names",
+                                        );
+                                    }
+                                    if has_node_labels {
+                                        ui.selectable_value(
+                                            &mut self.tree_painter.node_label_display,
+                                            NodeLabelDisplay::Labels,
+                                            "Labels",
+                                        );
+                                    }
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.node_label_display,
+                                        NodeLabelDisplay::BranchLength,
+                                        "Branch Length",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.node_label_display,
+                                        NodeLabelDisplay::NodeHeight,
+                                        "Node Height",
+                                    );
+                                    if !attribute_fields.is_empty() {
+                                        ui.separator();
+                                        for key in &attribute_fields {
+                                            let selected =
+                                                matches!(
+                                                    self.tree_painter.node_label_display,
+                                                    NodeLabelDisplay::Attribute
+                                                ) && self.tree_painter.node_label_attribute.as_deref()
+                                                    == Some(key.as_str());
+                                            if ui
+                                                .selectable_label(
+                                                    selected,
+                                                    format!("Attribute: {key}"),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.tree_painter.node_label_display =
+                                                    NodeLabelDisplay::Attribute;
+                                                self.tree_painter.node_label_attribute =
+                                                    Some(key.clone());
+                                            }
+                                        }
+                                    }
+                                });
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Font Size:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.tree_painter.node_label_font_size)
+                                    .speed(0.25)
+                                    .range(6.0..=48.0),
+                            );
+                        });
+
+                        let is_numeric = self.tree_painter.node_label_display.is_numeric();
+
+                        ui.horizontal(|ui| {
+                            ui.label("Format:");
+                            ui.add_enabled_ui(is_numeric, |ui| {
+                                egui::ComboBox::from_id_salt("node_labels_format")
+                                    .selected_text(self.tree_painter.node_label_format.label())
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.tree_painter.node_label_format,
+                                            TipLabelNumberFormat::Decimal,
+                                            "Decimal",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.tree_painter.node_label_format,
+                                            TipLabelNumberFormat::Scientific,
+                                            "Scientific",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.tree_painter.node_label_format,
+                                            TipLabelNumberFormat::Percentage,
+                                            "Percentage",
+                                        );
+                                    });
+                            });
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Sig Digits:");
+                            ui.add_enabled_ui(is_numeric, |ui| {
+                                ui.add(
+                                    egui::DragValue::new(
+                                        &mut self.tree_painter.node_label_precision,
+                                    )
+                                    .speed(0.25)
+                                    .range(0.0..=10.0),
+                                );
+                            });
+                        });
+                    });
+                });
                 self.panel_states.node_labels_expanded = node_state.is_open();
 
                 let branch_header_id = ui.make_persistent_id("controls_branch_labels");
