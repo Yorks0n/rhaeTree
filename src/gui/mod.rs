@@ -25,6 +25,7 @@ pub struct FigTreeGui {
     tree_viewer: TreeViewer,
     status: String,
     last_error: Option<String>,
+    load_warning_dialog: Option<String>,
     export_feedback: Option<String>,
     current_layout: crate::tree::layout::TreeLayoutType,
     tree_painter: crate::tree::painter::TreePainter,
@@ -246,6 +247,7 @@ impl FigTreeGui {
             tree_viewer: TreeViewer::new(),
             status: String::from("Load a tree file to begin."),
             last_error: None,
+            load_warning_dialog: None,
             export_feedback: None,
             current_layout: crate::tree::layout::TreeLayoutType::Rectangular,
             tree_painter: crate::tree::painter::TreePainter::default(),
@@ -505,6 +507,7 @@ impl FigTreeGui {
                 );
                 info!("Loaded tree file {}", path.display());
                 self.last_error = None;
+                self.load_warning_dialog = None;
                 if let Some(output) = self.config.output.clone() {
                     match ui::export(&bundle, &self.config, &output) {
                         Ok(_) => {
@@ -533,6 +536,11 @@ impl FigTreeGui {
                 let message = err.to_string();
                 self.status = String::from("Failed to load tree file.");
                 self.last_error = Some(message.clone());
+                self.load_warning_dialog = Some(format!(
+                    "Failed to parse tree file:\n{}\n\n{}",
+                    path.display(),
+                    message
+                ));
                 Err(message)
             }
         }
@@ -3203,5 +3211,29 @@ impl eframe::App for FigTreeGui {
                 }
             });
         });
+
+        if self.load_warning_dialog.is_some() {
+            let mut open = true;
+            let mut close_clicked = false;
+            let message = self
+                .load_warning_dialog
+                .as_deref()
+                .unwrap_or("Failed to parse tree file.");
+            egui::Window::new("Warning")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.label(message);
+                    ui.add_space(8.0);
+                    if ui.button("OK").clicked() {
+                        close_clicked = true;
+                    }
+                });
+            if !open || close_clicked {
+                self.load_warning_dialog = None;
+            }
+        }
     }
 }
