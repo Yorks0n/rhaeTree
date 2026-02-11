@@ -1,10 +1,10 @@
-# FigTree Rust - AGENT 指南（按当前仓库实现更新）
+# rhaeTree - AGENT 指南（按当前仓库实现更新）
 
 本文档面向在本仓库协作的工程代理（Agent）与开发者，描述当前真实功能、代码结构、约束与推荐工作流。内容以 `main` 工作树当前代码为准。
 
 ## 1. 项目快照
 
-- 项目：`figtree_rust`
+- 项目：`rhaeTree`（package: `rhaetree`）
 - 语言：Rust 2021
 - GUI：`eframe/egui 0.33`（`wgpu` 后端）
 - 渲染后端：
@@ -50,7 +50,7 @@ cargo run -- --headless <tree_file>
 - 可打开：`*.tree, *.tre, *.trees, *.nexus, *.nex, *.newick, *.nwk, *.rtr`
 - 自动识别：扩展名 + 内容头（如 `#NEXUS` / `BEGIN ...`）
 - `RTR`：
-  - 结构为 NEXUS 兼容 `taxa` + `trees` 块，附加 `begin figtree_rust; set ...; end;`
+  - 结构为 NEXUS 兼容 `taxa` + `trees` 块，附加 `begin rhaetree; set ...; end;`
   - 可序列化布局、渲染、颜色覆盖、高亮、viewer/root/order/transform 等设置
 
 ### 4.2 NEXUS 解析能力
@@ -138,4 +138,3 @@ Tip Shape 与 Node Shape 均支持：
 - Save/Save As 语义符合第 4.4 节。
 - 导出 PNG/JPEG/SVG/PDF 不报错，文本可见，线宽与字号比例合理。
 - 关键交互（选择、高亮、Undo/Redo、布局切换）正常。
-

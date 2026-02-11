@@ -10,7 +10,7 @@ use crate::{gui::FigTreeGui, io, ui};
 
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "figtree-rust",
+    name = "rhaeTree",
     about = "Rust prototype GUI that loads phylogenetic trees via egui."
 )]
 pub struct AppConfig {
@@ -114,13 +114,13 @@ impl FigTreeApp {
             config.width, config.height
         );
         native_options.viewport = egui::ViewportBuilder::default()
-            .with_title("FigTree (Rust prototype)")
+            .with_title("rhaeTree")
             .with_inner_size(egui::vec2(config.width as f32, config.height as f32));
 
         let initial_config = config.clone();
 
         match eframe::run_native(
-            "FigTree (Rust prototype)",
+            "rhaeTree",
             native_options,
             Box::new(move |cc| Ok(Box::new(FigTreeGui::new(cc, initial_config)))),
         ) {

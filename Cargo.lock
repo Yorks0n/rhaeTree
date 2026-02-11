@@ -1450,30 +1450,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "figtree_rust"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cairo-rs",
- "clap",
- "eframe",
- "env_logger",
- "font-kit",
- "fontdue",
- "image 0.25.8",
- "log",
- "phylotree",
- "pollster",
- "printpdf",
- "rfd",
- "svg",
- "thiserror 1.0.69",
- "tiny-skia",
- "vello",
- "wgpu",
-]
-
-[[package]]
 name = "find-msvc-tools"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3890,6 +3866,30 @@ name = "rgb"
 version = "0.8.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c6a884d2998352bb4daf0183589aec883f16a6da1f4dde84d8e2e9a5409a1ce"
+
+[[package]]
+name = "rhaetree"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cairo-rs",
+ "clap",
+ "eframe",
+ "env_logger",
+ "font-kit",
+ "fontdue",
+ "image 0.25.8",
+ "log",
+ "phylotree",
+ "pollster",
+ "printpdf",
+ "rfd",
+ "svg",
+ "thiserror 1.0.69",
+ "tiny-skia",
+ "vello",
+ "wgpu",
+]
 
 [[package]]
 name = "roxmltree"

@@ -64,7 +64,7 @@ fn detect_format(path: &Path, raw: &str) -> TreeFileFormat {
 
         // Additional Nexus indicators
         let upper = trimmed.to_ascii_uppercase();
-        if upper.starts_with("BEGIN FIGTREE_RUST") {
+        if upper.starts_with("BEGIN RHAETREE") {
             return TreeFileFormat::Rtr;
         }
         if upper.starts_with("BEGIN ") || upper.starts_with("TREE ") {
@@ -205,7 +205,8 @@ fn parse_rtr_settings_block(raw: &str) -> BTreeMap<String, String> {
         }
 
         let upper = trimmed.to_ascii_uppercase();
-        if upper.starts_with("BEGIN FIGTREE_RUST") {
+        if upper.starts_with("BEGIN RHAETREE")
+        {
             in_block = true;
             continue;
         }
@@ -279,7 +280,7 @@ pub fn save_rtr(
     }
     out.push_str("end;\n\n");
 
-    out.push_str("begin figtree_rust;\n");
+    out.push_str("begin rhaetree;\n");
     out.push_str("\tset rtr.version=\"1\";\n");
     for (key, value) in settings {
         out.push_str(&format!("\tset {}={};\n", key, format_setting_value(value)));
@@ -698,7 +699,7 @@ END;";
 BEGIN TREES;
     TREE tree1 = (A:0.1,B:0.2);
 END;
-BEGIN FIGTREE_RUST;
+BEGIN RHAETREE;
     set layout.type=\"radial\";
     set painter.branchLineWidth=2.5;
 END;";

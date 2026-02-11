@@ -2623,7 +2623,7 @@ impl eframe::App for FigTreeGui {
         });
 
         // Minimal top menu with only file operations
-        egui::TopBottomPanel::top("figtree_menu")
+        egui::TopBottomPanel::top("rhaetree_menu")
             .min_height(28.0)
             .max_height(32.0)
             .show(ctx, |ui| {
@@ -4683,7 +4683,7 @@ impl eframe::App for FigTreeGui {
             }
         });
 
-        egui::TopBottomPanel::bottom("figtree_status").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("rhaetree_status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if let Some(path) = &self.config.tree_path {
                     ui.label(format!("Current file: {}", path.display()));
