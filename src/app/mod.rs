@@ -7,6 +7,8 @@ use eframe::{egui, NativeOptions};
 use log::{error, info, warn};
 
 use crate::{gui::FigTreeGui, io, ui};
+#[cfg(target_os = "macos")]
+use crate::macos_file_open;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -118,6 +120,8 @@ impl FigTreeApp {
             .with_inner_size(egui::vec2(config.width as f32, config.height as f32));
 
         let initial_config = config.clone();
+        #[cfg(target_os = "macos")]
+        macos_file_open::install();
 
         match eframe::run_native(
             "rhaeTree",

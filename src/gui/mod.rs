@@ -630,11 +630,51 @@ impl FigTreeGui {
                 error!("Failed to load {}: {}", path.display(), err);
             }
         }
+        #[cfg(target_os = "macos")]
+        if app.config.tree_path.is_none() {
+            let pending_paths = crate::macos_file_open::take_pending_paths();
+            app.open_external_paths(pending_paths);
+        }
 
         app.color_picker_color = app.tree_painter.highlight_color;
         app.node_bar_picker_color = app.tree_painter.node_bar_color();
 
         app
+    }
+
+    fn open_external_paths<I>(&mut self, paths: I)
+    where
+        I: IntoIterator<Item = PathBuf>,
+    {
+        for path in paths {
+            if let Err(err) = self.load_from_path(path.clone()) {
+                error!("Failed to load {}: {}", path.display(), err);
+                self.last_error = Some(err);
+                continue;
+            }
+            break;
+        }
+    }
+
+    fn consume_system_open_requests(&mut self, ctx: &egui::Context) {
+        let dropped_paths: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|file| file.path.clone())
+                .collect()
+        });
+        if !dropped_paths.is_empty() {
+            self.open_external_paths(dropped_paths);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let pending_paths = crate::macos_file_open::take_pending_paths();
+            if !pending_paths.is_empty() {
+                self.open_external_paths(pending_paths);
+            }
+        }
     }
 
     fn capture_edit_state(&self) -> EditState {
@@ -2362,6 +2402,8 @@ impl FigTreeGui {
 
 impl eframe::App for FigTreeGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.consume_system_open_requests(ctx);
+
         // Store pixels_per_point for export
         self.pixels_per_point = ctx.pixels_per_point();
 

@@ -2,6 +2,7 @@ mod app;
 mod export;
 mod gui;
 mod io;
+mod macos_file_open;
 mod tree;
 mod ui;
 

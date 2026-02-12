@@ -26,3 +26,8 @@ fontdue = "0.9"
 vello = "0.7"
 pollster = "0.4"
 cairo-rs = { version = "0.20", features = ["pdf"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5.2"
+objc2-app-kit = "0.2.2"
+objc2-foundation = "0.2.2"
