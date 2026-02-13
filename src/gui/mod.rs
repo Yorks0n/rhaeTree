@@ -37,6 +37,7 @@ pub struct FigTreeGui {
     color_picker_open: bool,
     color_picker_hex_input: String,
     color_picker_mode: ColorValueMode,
+    color_picker_panel: ColorPanelMode,
     color_picker_color: Color32,
     color_picker_origin: Option<egui::Pos2>,
     color_picker_popup_open: bool,
@@ -160,6 +161,12 @@ impl PanelStates {
 enum ColorValueMode {
     Hex,
     Rgb,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ColorPanelMode {
+    Custom,
+    Library,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -579,6 +586,7 @@ impl FigTreeGui {
             color_picker_open: false,
             color_picker_hex_input: String::new(),
             color_picker_mode: ColorValueMode::Hex,
+            color_picker_panel: ColorPanelMode::Custom,
             color_picker_color: Color32::WHITE,
             color_picker_origin: None,
             color_picker_popup_open: false,
@@ -2867,6 +2875,7 @@ impl eframe::App for FigTreeGui {
                                     initial.b()
                                 );
                                 self.color_picker_mode = ColorValueMode::Hex;
+                                self.color_picker_panel = ColorPanelMode::Custom;
                                 self.color_picker_open = true;
                                 self.color_picker_origin = Some(color_response.rect.right_top());
                                 self.color_picker_popup_open = false;
@@ -3040,151 +3049,219 @@ impl eframe::App for FigTreeGui {
             }
 
             window.open(&mut open).show(ctx, |ui| {
-                let rgb_input_width = 30.0;
-                let rgb_inputs_total_width = rgb_input_width * 3.0 + ui.spacing().item_spacing.x * 2.0;
                 ui.horizontal(|ui| {
-                    let toggle_label = match self.color_picker_mode {
-                        ColorValueMode::Hex => "HEX",
-                        ColorValueMode::Rgb => "RGB",
-                    };
-                    if ui.button(toggle_label).clicked() {
-                        self.color_picker_mode = match self.color_picker_mode {
-                            ColorValueMode::Hex => ColorValueMode::Rgb,
-                            ColorValueMode::Rgb => ColorValueMode::Hex,
-                        };
-                        if matches!(self.color_picker_mode, ColorValueMode::Hex) {
-                            self.color_picker_hex_input =
-                                format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
-                        }
+                    let custom_btn =
+                        egui::Button::new("Custom").selected(matches!(self.color_picker_panel, ColorPanelMode::Custom));
+                    if ui.add(custom_btn).clicked() {
+                        self.color_picker_panel = ColorPanelMode::Custom;
                     }
-
-                    match self.color_picker_mode {
-                        ColorValueMode::Hex => {
-                            let response = ui
-                                .scope(|ui| {
-                                    let mut style = (**ui.style()).clone();
-                                    let input_bg = Color32::from_gray(235);
-                                    style.visuals.widgets.inactive.bg_fill = input_bg;
-                                    style.visuals.widgets.hovered.bg_fill = input_bg;
-                                    style.visuals.widgets.active.bg_fill = input_bg;
-                                    ui.set_style(style);
-                                    ui.add_sized(
-                                        [rgb_inputs_total_width, 20.0],
-                                        egui::TextEdit::singleline(&mut self.color_picker_hex_input),
-                                    )
-                                })
-                                .inner;
-                            if response.changed() {
-                                if let Some(parsed) = parse_hex_color(&self.color_picker_hex_input)
-                                {
-                                    color = parsed;
-                                    self.color_picker_hex_input = format!(
-                                        "#{:02X}{:02X}{:02X}",
-                                        color.r(),
-                                        color.g(),
-                                        color.b()
-                                    );
-                                }
-                            }
-                        }
-                        ColorValueMode::Rgb => {
-                            let mut r = color.r() as i32;
-                            let mut g = color.g() as i32;
-                            let mut b = color.b() as i32;
-                            let mut rgb_changed = false;
-
-                            ui.scope(|ui| {
-                                let mut style = (**ui.style()).clone();
-                                let input_bg = Color32::from_gray(235);
-                                style.visuals.widgets.inactive.bg_fill = input_bg;
-                                style.visuals.widgets.hovered.bg_fill = input_bg;
-                                style.visuals.widgets.active.bg_fill = input_bg;
-                                ui.set_style(style);
-
-                                rgb_changed |= ui
-                                    .add_sized(
-                                        [rgb_input_width, 20.0],
-                                        egui::DragValue::new(&mut r)
-                                            .range(0..=255)
-                                            .speed(1.0),
-                                    )
-                                    .changed();
-                                rgb_changed |= ui
-                                    .add_sized(
-                                        [rgb_input_width, 20.0],
-                                        egui::DragValue::new(&mut g)
-                                            .range(0..=255)
-                                            .speed(1.0),
-                                    )
-                                    .changed();
-                                rgb_changed |= ui
-                                    .add_sized(
-                                        [rgb_input_width, 20.0],
-                                        egui::DragValue::new(&mut b)
-                                            .range(0..=255)
-                                            .speed(1.0),
-                                    )
-                                    .changed();
-                            });
-
-                            if rgb_changed {
-                                color = Color32::from_rgb(r as u8, g as u8, b as u8);
-                                self.color_picker_hex_input =
-                                    format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
-                            }
-                        }
+                    let library_btn =
+                        egui::Button::new("Library").selected(matches!(self.color_picker_panel, ColorPanelMode::Library));
+                    if ui.add(library_btn).clicked() {
+                        self.color_picker_panel = ColorPanelMode::Library;
                     }
                 });
 
                 ui.separator();
 
                 let mut picker_changed = false;
-                let palette_colors = self.picker_palette_colors();
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    let shown = palette_colors.len().min(10);
-                    if shown > 0 {
-                        let spacing = ui.spacing().item_spacing.x;
-                        let row_width = ui.available_width().max(80.0);
-                        let cell = ((row_width - spacing * (shown as f32 - 1.0)) / shown as f32)
-                            .clamp(11.0, 20.0);
-                        for palette_color in palette_colors.into_iter().take(shown) {
-                            let (rect, response) =
-                                ui.allocate_exact_size(egui::vec2(cell, cell), egui::Sense::click());
-                            ui.painter()
-                                .rect_filled(rect.shrink(1.0), 3.0, palette_color);
-                            if response.clicked() {
-                                color = palette_color;
+                match self.color_picker_panel {
+                    ColorPanelMode::Custom => {
+                        let rgb_input_width = 30.0;
+                        let rgb_inputs_total_width =
+                            rgb_input_width * 3.0 + ui.spacing().item_spacing.x * 2.0;
+                        ui.horizontal(|ui| {
+                            let toggle_label = match self.color_picker_mode {
+                                ColorValueMode::Hex => "HEX",
+                                ColorValueMode::Rgb => "RGB",
+                            };
+                            if ui.button(toggle_label).clicked() {
+                                self.color_picker_mode = match self.color_picker_mode {
+                                    ColorValueMode::Hex => ColorValueMode::Rgb,
+                                    ColorValueMode::Rgb => ColorValueMode::Hex,
+                                };
+                                if matches!(self.color_picker_mode, ColorValueMode::Hex) {
+                                    self.color_picker_hex_input =
+                                        format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+                                }
+                            }
+
+                            match self.color_picker_mode {
+                                ColorValueMode::Hex => {
+                                    let response = ui
+                                        .scope(|ui| {
+                                            let mut style = (**ui.style()).clone();
+                                            let input_bg = Color32::from_gray(235);
+                                            style.visuals.widgets.inactive.bg_fill = input_bg;
+                                            style.visuals.widgets.hovered.bg_fill = input_bg;
+                                            style.visuals.widgets.active.bg_fill = input_bg;
+                                            ui.set_style(style);
+                                            ui.add_sized(
+                                                [rgb_inputs_total_width, 20.0],
+                                                egui::TextEdit::singleline(&mut self.color_picker_hex_input),
+                                            )
+                                        })
+                                        .inner;
+                                    if response.changed() {
+                                        if let Some(parsed) = parse_hex_color(&self.color_picker_hex_input) {
+                                            color = parsed;
+                                            self.color_picker_hex_input = format!(
+                                                "#{:02X}{:02X}{:02X}",
+                                                color.r(),
+                                                color.g(),
+                                                color.b()
+                                            );
+                                        }
+                                    }
+                                }
+                                ColorValueMode::Rgb => {
+                                    let mut r = color.r() as i32;
+                                    let mut g = color.g() as i32;
+                                    let mut b = color.b() as i32;
+                                    let mut rgb_changed = false;
+
+                                    ui.scope(|ui| {
+                                        let mut style = (**ui.style()).clone();
+                                        let input_bg = Color32::from_gray(235);
+                                        style.visuals.widgets.inactive.bg_fill = input_bg;
+                                        style.visuals.widgets.hovered.bg_fill = input_bg;
+                                        style.visuals.widgets.active.bg_fill = input_bg;
+                                        ui.set_style(style);
+
+                                        rgb_changed |= ui
+                                            .add_sized(
+                                                [rgb_input_width, 20.0],
+                                                egui::DragValue::new(&mut r).range(0..=255).speed(1.0),
+                                            )
+                                            .changed();
+                                        rgb_changed |= ui
+                                            .add_sized(
+                                                [rgb_input_width, 20.0],
+                                                egui::DragValue::new(&mut g).range(0..=255).speed(1.0),
+                                            )
+                                            .changed();
+                                        rgb_changed |= ui
+                                            .add_sized(
+                                                [rgb_input_width, 20.0],
+                                                egui::DragValue::new(&mut b).range(0..=255).speed(1.0),
+                                            )
+                                            .changed();
+                                    });
+
+                                    if rgb_changed {
+                                        color = Color32::from_rgb(r as u8, g as u8, b as u8);
+                                        self.color_picker_hex_input =
+                                            format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+                                    }
+                                }
+                            }
+                        });
+
+                        ui.separator();
+
+                        let palette_colors = self.picker_palette_colors();
+                        ui.horizontal(|ui| {
+                            // Visual gap = item_spacing + shrink(1.0) on both adjacent cells.
+                            // Target 6 px actual spacing across DPI scales.
+                            let target_gap_points = 6.0 / ctx.pixels_per_point();
+                            ui.spacing_mut().item_spacing.x = (target_gap_points - 2.0).max(0.0);
+                            let shown = palette_colors.len().min(10);
+                            if shown > 0 {
+                                let spacing = ui.spacing().item_spacing.x;
+                                let row_width = ui.available_width().max(80.0);
+                                let cell = ((row_width - spacing * (shown as f32 - 1.0)) / shown as f32)
+                                    .clamp(11.0, 20.0);
+                                for palette_color in palette_colors.into_iter().take(shown) {
+                                    let (rect, response) =
+                                        ui.allocate_exact_size(egui::vec2(cell, cell), egui::Sense::click());
+                                    ui.painter().rect_filled(rect.shrink(1.0), 3.0, palette_color);
+                                    if response.clicked() {
+                                        color = palette_color;
+                                        picker_changed = true;
+                                    }
+                                }
+                            }
+                        });
+
+                        // Keep the built-in picker body, but clip away its first control row (U8/copy/RGB).
+                        let clip_top = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                        let side_padding = 0.0;
+                        let picker_height = 250.0;
+                        let row_width = ui.available_width().max(96.0);
+                        let (row_rect, _) =
+                            ui.allocate_exact_size(egui::vec2(row_width, picker_height), egui::Sense::hover());
+                        let picker_rect = row_rect.shrink2(egui::vec2(side_padding, 0.0));
+                        let picker_width = picker_rect.width().max(80.0);
+                        let shifted_rect = picker_rect.translate(egui::vec2(0.0, -clip_top));
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(shifted_rect), |ui| {
+                            ui.set_clip_rect(picker_rect);
+                            let mut style = (**ui.style()).clone();
+                            style.spacing.slider_width = picker_width;
+                            style.spacing.item_spacing *= 0.8;
+                            ui.set_style(style);
+                            if color_picker::color_picker_color32(
+                                ui,
+                                &mut color,
+                                color_picker::Alpha::Opaque,
+                            ) {
                                 picker_changed = true;
+                            }
+                        });
+                    }
+                    ColorPanelMode::Library => {
+                        let library_colors: [[u8; 3]; 12] = [
+                            [255, 53, 64],
+                            [255, 142, 40],
+                            [247, 202, 0],
+                            [55, 192, 86],
+                            [26, 184, 168],
+                            [27, 179, 192],
+                            [24, 167, 206],
+                            [28, 131, 229],
+                            [93, 83, 221],
+                            [184, 50, 205],
+                            [255, 40, 94],
+                            [173, 130, 95],
+                        ];
+                        let cols = 6;
+                        let spacing_x = 10.0;
+                        let spacing_y = 10.0;
+                        let row_width = ui.available_width().max(120.0);
+                        let cell = ((row_width - spacing_x * (cols as f32 - 1.0)) / cols as f32)
+                            .clamp(18.0, 40.0);
+
+                        for row in 0..2 {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = spacing_x;
+                                for col in 0..cols {
+                                    let idx = row * cols + col;
+                                    let rgb = library_colors[idx];
+                                    let swatch = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                                    let is_selected = swatch.r() == color.r()
+                                        && swatch.g() == color.g()
+                                        && swatch.b() == color.b();
+                                    let stroke = if is_selected {
+                                        egui::Stroke::new(2.0, Color32::from_gray(40))
+                                    } else {
+                                        egui::Stroke::NONE
+                                    };
+                                    let button = egui::Button::new("")
+                                        .fill(swatch)
+                                        .stroke(stroke)
+                                        .corner_radius(8.0)
+                                        .min_size(egui::vec2(cell, cell * 0.86));
+                                    if ui.add(button).clicked() {
+                                        color = swatch;
+                                        picker_changed = true;
+                                    }
+                                }
+                            });
+                            if row == 0 {
+                                ui.add_space(spacing_y);
                             }
                         }
                     }
-                });
-
-                // Keep the built-in picker body, but clip away its first control row (U8/copy/RGB).
-                let clip_top = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-                let side_padding = 0.0;
-                let picker_height = 250.0;
-                let row_width = ui.available_width().max(96.0);
-                let (row_rect, _) =
-                    ui.allocate_exact_size(egui::vec2(row_width, picker_height), egui::Sense::hover());
-                let picker_rect = row_rect.shrink2(egui::vec2(side_padding, 0.0));
-                let picker_width = picker_rect.width().max(80.0);
-                let shifted_rect = picker_rect.translate(egui::vec2(0.0, -clip_top));
-                ui.scope_builder(egui::UiBuilder::new().max_rect(shifted_rect), |ui| {
-                    ui.set_clip_rect(picker_rect);
-                    let mut style = (**ui.style()).clone();
-                    style.spacing.slider_width = picker_width;
-                    style.spacing.item_spacing *= 0.8;
-                    ui.set_style(style);
-                    if color_picker::color_picker_color32(
-                        ui,
-                        &mut color,
-                        color_picker::Alpha::Opaque,
-                    ) {
-                        picker_changed = true;
-                    }
-                });
+                }
 
                 if picker_changed {
                     self.color_picker_hex_input =
