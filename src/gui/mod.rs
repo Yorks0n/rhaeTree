@@ -850,6 +850,65 @@ impl FigTreeGui {
         }
     }
 
+    fn tip_shape_selection_color(&self) -> Color32 {
+        if let Some(&tip_id) = self.tree_viewer.selected_tips().iter().next() {
+            return self
+                .tree_painter
+                .tip_label_color_override(tip_id)
+                .unwrap_or(self.tree_painter.leaf_color);
+        }
+        self.tree_painter.leaf_color
+    }
+
+    fn apply_tip_shape_color_to_selection(&mut self, color: Color32) {
+        if self.tree_viewer.selected_tips().is_empty() {
+            return;
+        }
+        self.record_undo_step();
+        for tip_id in self.tree_viewer.selected_tips() {
+            self.tree_painter.set_tip_label_color(*tip_id, color);
+        }
+    }
+
+    fn node_shape_selection_color(&self) -> Color32 {
+        if let Some(tree) = self.tree_viewer.current_tree() {
+            if let Some(&node_id) = self
+                .tree_viewer
+                .selected_nodes()
+                .iter()
+                .find(|id| !tree.nodes[**id].is_leaf())
+            {
+                return self
+                    .tree_painter
+                    .branch_color_override(node_id)
+                    .unwrap_or(self.tree_painter.internal_node_color);
+            }
+        }
+        self.tree_painter.internal_node_color
+    }
+
+    fn apply_node_shape_color_to_selection(&mut self, color: Color32) {
+        let Some(tree) = self.tree_viewer.current_tree() else {
+            return;
+        };
+
+        let selected_internal_nodes: Vec<NodeId> = self
+            .tree_viewer
+            .selected_nodes()
+            .iter()
+            .copied()
+            .filter(|id| !tree.nodes[*id].is_leaf())
+            .collect();
+
+        if selected_internal_nodes.is_empty() {
+            return;
+        }
+        self.record_undo_step();
+        for node_id in selected_internal_nodes {
+            self.tree_painter.set_branch_color(node_id, color);
+        }
+    }
+
     fn load_from_path(&mut self, path: PathBuf) -> Result<(), String> {
         match io::load_trees(&path) {
             Ok(bundle) => {
@@ -4308,21 +4367,40 @@ impl eframe::App for FigTreeGui {
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.tree_painter.tip_shape_color_mode,
-                                    ShapeColorMode::UserSelection,
-                                    ShapeColorMode::UserSelection.label(),
-                                );
-                                ui.selectable_value(
-                                    &mut self.tree_painter.tip_shape_color_mode,
                                     ShapeColorMode::Fixed,
                                     ShapeColorMode::Fixed.label(),
                                 );
+                                ui.selectable_value(
+                                    &mut self.tree_painter.tip_shape_color_mode,
+                                    ShapeColorMode::UserSelection,
+                                    ShapeColorMode::UserSelection.label(),
+                                );
                             });
                     });
-                    if matches!(self.tree_painter.tip_shape_color_mode, ShapeColorMode::Fixed) {
-                        ui.horizontal(|ui| {
-                            ui.label("Color:");
-                            ui.color_edit_button_srgba(&mut self.tree_painter.tip_shape_fixed_color);
-                        });
+                    match self.tree_painter.tip_shape_color_mode {
+                        ShapeColorMode::Fixed => {
+                            ui.horizontal(|ui| {
+                                ui.label("Color:");
+                                ui.color_edit_button_srgba(
+                                    &mut self.tree_painter.tip_shape_fixed_color,
+                                );
+                            });
+                        }
+                        ShapeColorMode::UserSelection => {
+                            ui.horizontal(|ui| {
+                                ui.label("Color:");
+                                let has_tip_selection = !self.tree_viewer.selected_tips().is_empty();
+                                let mut color = self.tip_shape_selection_color();
+                                let changed = ui
+                                    .add_enabled_ui(has_tip_selection, |ui| {
+                                        ui.color_edit_button_srgba(&mut color).changed()
+                                    })
+                                    .inner;
+                                if changed {
+                                    self.apply_tip_shape_color_to_selection(color);
+                                }
+                            });
+                        }
                     }
                 });
                 self.panel_states.tip_shapes_expanded = tip_shapes_state.is_open();
@@ -4466,23 +4544,49 @@ impl eframe::App for FigTreeGui {
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(
                                         &mut self.tree_painter.node_shape_color_mode,
-                                        ShapeColorMode::UserSelection,
-                                        ShapeColorMode::UserSelection.label(),
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.tree_painter.node_shape_color_mode,
                                         ShapeColorMode::Fixed,
                                         ShapeColorMode::Fixed.label(),
                                     );
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.node_shape_color_mode,
+                                        ShapeColorMode::UserSelection,
+                                        ShapeColorMode::UserSelection.label(),
+                                    );
                                 });
                         });
-                        if matches!(self.tree_painter.node_shape_color_mode, ShapeColorMode::Fixed) {
-                            ui.horizontal(|ui| {
-                                ui.label("Color:");
-                                ui.color_edit_button_srgba(
-                                    &mut self.tree_painter.node_shape_fixed_color,
-                                );
-                            });
+                        match self.tree_painter.node_shape_color_mode {
+                            ShapeColorMode::Fixed => {
+                                ui.horizontal(|ui| {
+                                    ui.label("Color:");
+                                    ui.color_edit_button_srgba(
+                                        &mut self.tree_painter.node_shape_fixed_color,
+                                    );
+                                });
+                            }
+                            ShapeColorMode::UserSelection => {
+                                ui.horizontal(|ui| {
+                                    ui.label("Color:");
+                                    let has_node_selection = self
+                                        .tree_viewer
+                                        .current_tree()
+                                        .map(|tree| {
+                                            self.tree_viewer
+                                                .selected_nodes()
+                                                .iter()
+                                                .any(|id| !tree.nodes[*id].is_leaf())
+                                        })
+                                        .unwrap_or(false);
+                                    let mut color = self.node_shape_selection_color();
+                                    let changed = ui
+                                        .add_enabled_ui(has_node_selection, |ui| {
+                                            ui.color_edit_button_srgba(&mut color).changed()
+                                        })
+                                        .inner;
+                                    if changed {
+                                        self.apply_node_shape_color_to_selection(color);
+                                    }
+                                });
+                            }
                         }
                     },
                 );

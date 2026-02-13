@@ -505,21 +505,25 @@ pub fn build_tree_scene(
         }
 
         let is_selected = selected_nodes.contains(&node.id) || selected_tips.contains(&node.id);
-        let base_fill = if is_selected {
-            painter.selected_color
-        } else if node.is_leaf() {
+        let base_fill = if node.is_leaf() {
             painter.leaf_color
         } else {
             painter.internal_node_color
         };
-        let fill = if is_selected {
-            painter.selected_color
-        } else if node.is_leaf() && matches!(painter.tip_shape_color_mode, ShapeColorMode::Fixed) {
-            painter.tip_shape_fixed_color
-        } else if !node.is_leaf() && matches!(painter.node_shape_color_mode, ShapeColorMode::Fixed) {
-            painter.node_shape_fixed_color
+        let fill = if node.is_leaf() {
+            match painter.tip_shape_color_mode {
+                ShapeColorMode::Fixed => painter.tip_shape_fixed_color,
+                ShapeColorMode::UserSelection => painter
+                    .tip_label_color_override(node.id)
+                    .unwrap_or(base_fill),
+            }
         } else {
-            base_fill
+            match painter.node_shape_color_mode {
+                ShapeColorMode::Fixed => painter.node_shape_fixed_color,
+                ShapeColorMode::UserSelection => painter
+                    .branch_color_override(node.id)
+                    .unwrap_or(base_fill),
+            }
         };
         let should_draw = if node.is_leaf() {
             painter.show_tip_shapes
@@ -535,6 +539,16 @@ pub fn build_tree_scene(
                 if is_tip { tip_value_range } else { node_value_range },
             );
             let shape = if is_tip { painter.tip_shape } else { painter.node_shape };
+            if is_selected {
+                let highlight_radius = (radius + 2.0).max(radius * 1.8);
+                push_shape_primitive(
+                    &mut primitives,
+                    p,
+                    highlight_radius,
+                    painter.tip_selection_color,
+                    shape,
+                );
+            }
             push_shape_primitive(&mut primitives, p, radius, fill, shape);
         }
 
