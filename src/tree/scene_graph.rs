@@ -785,29 +785,28 @@ pub fn build_tree_scene(
                                 if let Some(offset) = upward_perpendicular_offset(ray, 8.0) {
                                     anchor += offset;
                                 }
-                                let (rotation, align) = if ray.length_sq() > 1e-6 {
-                                    readable_rotation(ray.y.atan2(ray.x))
+                                let rotation = if ray.length_sq() > 1e-6 {
+                                    readable_rotation_center(ray.y.atan2(ray.x))
                                 } else {
-                                    (0.0, egui::Align2::LEFT_CENTER)
+                                    0.0
                                 };
                                 primitives.push(ScenePrimitive::Text {
                                     text,
                                     anchor,
                                     angle: rotation,
-                                    align,
+                                    align: egui::Align2::CENTER_CENTER,
                                     size: painter.branch_label_font_size,
                                     color: painter.branch_label_color,
                                 });
                             } else {
                                 let pp = to_local(to_screen(layout.positions[parent_id]));
                                 let dir = p - pp;
-                                let angle = dir.y.atan2(dir.x);
-                                let (rotation, align) = readable_rotation(angle);
+                                let rotation = readable_rotation_center(dir.y.atan2(dir.x));
                                 primitives.push(ScenePrimitive::Text {
                                     text,
                                     anchor: Pos2::new((pp.x + p.x) * 0.5, (pp.y + p.y) * 0.5 - 8.0),
                                     angle: rotation,
-                                    align,
+                                    align: egui::Align2::CENTER_CENTER,
                                     size: painter.branch_label_font_size,
                                     color: painter.branch_label_color,
                                 });
@@ -825,13 +824,12 @@ pub fn build_tree_scene(
                             if let Some(offset) = upward_perpendicular_offset(dir, 8.0) {
                                 anchor += offset;
                             }
-                            let angle = dir.y.atan2(dir.x);
-                            let (rotation, align) = readable_rotation(angle);
+                            let rotation = readable_rotation_center(dir.y.atan2(dir.x));
                             primitives.push(ScenePrimitive::Text {
                                 text,
                                 anchor,
                                 angle: rotation,
-                                align,
+                                align: egui::Align2::CENTER_CENTER,
                                 size: painter.branch_label_font_size,
                                 color: painter.branch_label_color,
                             });
@@ -864,13 +862,12 @@ pub fn build_tree_scene(
                             let b = to_local(to_screen(b_w));
                             let anchor = Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5 - 8.0);
                             let dir = b - a;
-                            let angle = dir.y.atan2(dir.x);
-                            let (rotation, align) = readable_rotation(angle);
+                            let rotation = readable_rotation_center(dir.y.atan2(dir.x));
                             primitives.push(ScenePrimitive::Text {
                                 text,
                                 anchor,
                                 angle: rotation,
-                                align,
+                                align: egui::Align2::CENTER_CENTER,
                                 size: painter.branch_label_font_size,
                                 color: painter.branch_label_color,
                             });
@@ -1124,6 +1121,16 @@ fn readable_rotation(angle: f32) -> (f32, egui::Align2) {
         (angle + std::f32::consts::PI, egui::Align2::RIGHT_CENTER)
     } else {
         (angle, egui::Align2::LEFT_CENTER)
+    }
+}
+
+fn readable_rotation_center(angle: f32) -> f32 {
+    let degree = angle.to_degrees();
+    let normalized = if degree < 0.0 { degree + 360.0 } else { degree };
+    if normalized > 90.0 && normalized < 270.0 {
+        angle + std::f32::consts::PI
+    } else {
+        angle
     }
 }
 
