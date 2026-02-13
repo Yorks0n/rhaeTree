@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
-use crate::tree::layout::{TreeLayout, TreeLayoutType};
+use crate::tree::layout::{RectSegmentKind, TreeLayout, TreeLayoutType};
 use crate::tree::painter::{HighlightShape, ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelHit, TreePainter};
 use crate::tree::viewer::SelectionMode;
 use crate::tree::{NodeId, Tree, TreeNode};
@@ -490,6 +490,25 @@ pub fn build_tree_scene(
             }
         })
         .collect();
+    let branch_span_segments: HashMap<NodeId, ((f32, f32), (f32, f32))> = layout
+        .continuous_branches
+        .iter()
+        .filter_map(|branch| {
+            if branch.points.len() >= 2 {
+                Some((branch.child, (branch.points[0], *branch.points.last().unwrap())))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let rectangular_horizontal_by_child: HashMap<NodeId, ((f32, f32), (f32, f32))> = layout
+        .rect_segments
+        .iter()
+        .filter_map(|seg| match (seg.kind, seg.child) {
+            (RectSegmentKind::Horizontal, Some(child_id)) => Some((child_id, (seg.start, seg.end))),
+            _ => None,
+        })
+        .collect();
     let circular_arc_by_child: HashMap<NodeId, (f32, f32, f32, f32, f32)> = layout
         .arc_segments
         .iter()
@@ -506,13 +525,6 @@ pub fn build_tree_scene(
             )
         })
         .collect();
-    let circular_center_world = layout
-        .arc_segments
-        .first()
-        .map(|arc| arc.center)
-        .or_else(|| tree.root.map(|root| layout.positions[root]))
-        .unwrap_or((layout.width * 0.5, layout.height * 0.5));
-    let radial_center_screen = to_local(to_screen(circular_center_world));
     let node_heights = if painter.show_node_labels
         && matches!(painter.node_label_display, crate::tree::painter::NodeLabelDisplay::NodeHeight)
     {
@@ -760,22 +772,24 @@ pub fn build_tree_scene(
                 if let Some(text) = painter.branch_label_text(node) {
                     match layout.layout_type {
                         TreeLayoutType::Circular => {
-                            if let Some((cx, cy, radius, start_angle, end_angle)) =
+                            if let Some((cx, cy, radius, start_angle, _end_angle)) =
                                 circular_arc_by_child.get(&node.id).copied()
                             {
-                                let mut end = end_angle;
-                                if end <= start_angle {
-                                    end += std::f32::consts::TAU;
+                                let shoulder =
+                                    Pos2::new(cx + radius * start_angle.cos(), cy + radius * start_angle.sin());
+                                let shoulder_s = to_local(to_screen((shoulder.x, shoulder.y)));
+                                let child_s = p;
+                                let ray = child_s - shoulder_s;
+                                let mut anchor =
+                                    Pos2::new((shoulder_s.x + child_s.x) * 0.5, (shoulder_s.y + child_s.y) * 0.5);
+                                if let Some(offset) = upward_perpendicular_offset(ray, 8.0) {
+                                    anchor += offset;
                                 }
-                                let mid_angle = start_angle + (end - start_angle) * 0.5;
-                                let mid_world =
-                                    (cx + radius * mid_angle.cos(), cy + radius * mid_angle.sin());
-                                let center_screen = to_local(to_screen((cx, cy)));
-                                let mut anchor = to_local(to_screen(mid_world));
-                                let outward = (anchor - center_screen).normalized();
-                                anchor += outward * 8.0;
-                                let (rotation, align) =
-                                    readable_rotation(mid_angle + std::f32::consts::FRAC_PI_2);
+                                let (rotation, align) = if ray.length_sq() > 1e-6 {
+                                    readable_rotation(ray.y.atan2(ray.x))
+                                } else {
+                                    (0.0, egui::Align2::LEFT_CENTER)
+                                };
                                 primitives.push(ScenePrimitive::Text {
                                     text,
                                     anchor,
@@ -791,7 +805,7 @@ pub fn build_tree_scene(
                                 let (rotation, align) = readable_rotation(angle);
                                 primitives.push(ScenePrimitive::Text {
                                     text,
-                                    anchor: Pos2::new((pp.x + p.x) * 0.5, (pp.y + p.y) * 0.5),
+                                    anchor: Pos2::new((pp.x + p.x) * 0.5, (pp.y + p.y) * 0.5 - 8.0),
                                     angle: rotation,
                                     align,
                                     size: painter.branch_label_font_size,
@@ -799,17 +813,18 @@ pub fn build_tree_scene(
                                 });
                             }
                         }
-                        TreeLayoutType::Radial | TreeLayoutType::Daylight => {
-                            let (a_w, b_w) = branch_terminal_segments
+                        TreeLayoutType::Radial => {
+                            let (a_w, b_w) = branch_span_segments
                                 .get(&node.id)
                                 .copied()
                                 .unwrap_or((layout.positions[parent_id], layout.positions[node.id]));
                             let a = to_local(to_screen(a_w));
                             let b = to_local(to_screen(b_w));
-                            let mut anchor = Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
-                            let outward = (anchor - radial_center_screen).normalized();
-                            anchor += outward * 5.0;
                             let dir = b - a;
+                            let mut anchor = Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                            if let Some(offset) = upward_perpendicular_offset(dir, 8.0) {
+                                anchor += offset;
+                            }
                             let angle = dir.y.atan2(dir.x);
                             let (rotation, align) = readable_rotation(angle);
                             primitives.push(ScenePrimitive::Text {
@@ -821,11 +836,8 @@ pub fn build_tree_scene(
                                 color: painter.branch_label_color,
                             });
                         }
-                        TreeLayoutType::Rectangular
-                        | TreeLayoutType::Phylogram
-                        | TreeLayoutType::Cladogram
-                        | TreeLayoutType::Slanted => {
-                            let (a_w, b_w) = branch_terminal_segments
+                        TreeLayoutType::Rectangular => {
+                            let (a_w, b_w) = rectangular_horizontal_by_child
                                 .get(&node.id)
                                 .copied()
                                 .unwrap_or((layout.positions[parent_id], layout.positions[node.id]));
@@ -836,6 +848,29 @@ pub fn build_tree_scene(
                                 anchor: Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5 - 10.0),
                                 angle: 0.0,
                                 align: egui::Align2::CENTER_CENTER,
+                                size: painter.branch_label_font_size,
+                                color: painter.branch_label_color,
+                            });
+                        }
+                        TreeLayoutType::Daylight
+                        | TreeLayoutType::Phylogram
+                        | TreeLayoutType::Cladogram
+                        | TreeLayoutType::Slanted => {
+                            let (a_w, b_w) = branch_terminal_segments
+                                .get(&node.id)
+                                .copied()
+                                .unwrap_or((layout.positions[parent_id], layout.positions[node.id]));
+                            let a = to_local(to_screen(a_w));
+                            let b = to_local(to_screen(b_w));
+                            let anchor = Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5 - 8.0);
+                            let dir = b - a;
+                            let angle = dir.y.atan2(dir.x);
+                            let (rotation, align) = readable_rotation(angle);
+                            primitives.push(ScenePrimitive::Text {
+                                text,
+                                anchor,
+                                angle: rotation,
+                                align,
                                 size: painter.branch_label_font_size,
                                 color: painter.branch_label_color,
                             });
@@ -1089,6 +1124,21 @@ fn readable_rotation(angle: f32) -> (f32, egui::Align2) {
         (angle + std::f32::consts::PI, egui::Align2::RIGHT_CENTER)
     } else {
         (angle, egui::Align2::LEFT_CENTER)
+    }
+}
+
+fn upward_perpendicular_offset(dir: Vec2, magnitude: f32) -> Option<Vec2> {
+    if dir.length_sq() <= 1e-6 {
+        return None;
+    }
+    let n1 = Vec2::new(-dir.y, dir.x);
+    let n2 = Vec2::new(dir.y, -dir.x);
+    let chosen = if n1.y <= n2.y { n1 } else { n2 };
+    let len = chosen.length();
+    if len <= 1e-6 {
+        None
+    } else {
+        Some(chosen / len * magnitude)
     }
 }
 
