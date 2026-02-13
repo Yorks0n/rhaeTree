@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
 };
@@ -80,6 +80,7 @@ pub struct FigTreeGui {
     annotate_text: String,
     annotate_field: AnnotateField,
     last_saved_annotate_field: AnnotateField,
+    recent_colors: Vec<Color32>,
     undo_stack: Vec<EditState>,
     redo_stack: Vec<EditState>,
 }
@@ -621,6 +622,7 @@ impl FigTreeGui {
             annotate_text: String::new(),
             annotate_field: AnnotateField::Labels,
             last_saved_annotate_field: AnnotateField::Labels,
+            recent_colors: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         };
@@ -848,6 +850,81 @@ impl FigTreeGui {
         for node_id in branch_nodes {
             self.tree_painter.set_branch_color(node_id, color);
         }
+    }
+
+    fn record_recent_color(&mut self, color: Color32) {
+        self.recent_colors.retain(|c| *c != color);
+        self.recent_colors.insert(0, color);
+        if self.recent_colors.len() > 12 {
+            self.recent_colors.truncate(12);
+        }
+    }
+
+    fn tree_used_colors(&self) -> Vec<Color32> {
+        let mut colors = Vec::new();
+        colors.push(self.tree_painter.branch_stroke.color);
+        colors.push(self.tree_painter.branch_highlight_stroke.color);
+        colors.push(self.tree_painter.leaf_color);
+        colors.push(self.tree_painter.internal_node_color);
+        colors.push(self.tree_painter.selected_color);
+        colors.push(self.tree_painter.label_color);
+        colors.push(self.tree_painter.branch_label_color);
+        colors.push(self.tree_painter.highlight_color);
+        colors.push(self.tree_painter.tip_selection_color);
+        colors.push(self.tree_painter.tip_shape_fixed_color);
+        colors.push(self.tree_painter.node_shape_fixed_color);
+        colors.push(self.tree_painter.node_bar_color());
+        colors.extend(
+            self.tree_painter
+                .branch_color_overrides()
+                .values()
+                .copied(),
+        );
+        colors.extend(
+            self.tree_painter
+                .tip_label_color_overrides()
+                .values()
+                .copied(),
+        );
+        colors.extend(self.tree_painter.highlighted_clades().values().copied());
+
+        let mut seen = HashSet::new();
+        let mut deduped = Vec::new();
+        for color in colors {
+            let key = (color.r(), color.g(), color.b(), color.a());
+            if seen.insert(key) {
+                deduped.push(color);
+            }
+        }
+        deduped
+    }
+
+    fn picker_palette_colors(&self) -> Vec<Color32> {
+        let mut combined = self.recent_colors.clone();
+        combined.extend(self.tree_used_colors());
+
+        let mut seen = HashSet::new();
+        let mut deduped = Vec::new();
+        for color in combined {
+            let key = (color.r(), color.g(), color.b(), color.a());
+            if seen.insert(key) {
+                deduped.push(color);
+            }
+        }
+        deduped.truncate(16);
+        deduped
+    }
+
+    fn compact_shape_color_button(ui: &mut egui::Ui, color: &mut Color32) -> egui::Response {
+        ui.scope(|ui| {
+            let mut style = (**ui.style()).clone();
+            style.spacing.slider_width *= 0.6;
+            style.spacing.item_spacing *= 0.8;
+            ui.set_style(style);
+            ui.set_width(140.0);
+            ui.color_edit_button_srgba(color)
+        })
+        .inner
     }
 
     fn tip_shape_selection_color(&self) -> Color32 {
@@ -2962,14 +3039,13 @@ impl eframe::App for FigTreeGui {
                 window = window.default_pos(anchor + egui::vec2(12.0, 0.0));
             }
 
-            let mut request_popup_open = false;
-            let mut window_rect: Option<egui::Rect> = None;
-
-            let window_output = window.open(&mut open).show(ctx, |ui| {
+            window.open(&mut open).show(ctx, |ui| {
+                let rgb_input_width = 30.0;
+                let rgb_inputs_total_width = rgb_input_width * 3.0 + ui.spacing().item_spacing.x * 2.0;
                 ui.horizontal(|ui| {
                     let toggle_label = match self.color_picker_mode {
-                        ColorValueMode::Hex => "Show RGB",
-                        ColorValueMode::Rgb => "Show HEX",
+                        ColorValueMode::Hex => "HEX",
+                        ColorValueMode::Rgb => "RGB",
                     };
                     if ui.button(toggle_label).clicked() {
                         self.color_picker_mode = match self.color_picker_mode {
@@ -2984,10 +3060,20 @@ impl eframe::App for FigTreeGui {
 
                     match self.color_picker_mode {
                         ColorValueMode::Hex => {
-                            let response = ui.add(
-                                egui::TextEdit::singleline(&mut self.color_picker_hex_input)
-                                    .desired_width(60.0),
-                            );
+                            let response = ui
+                                .scope(|ui| {
+                                    let mut style = (**ui.style()).clone();
+                                    let input_bg = Color32::from_gray(235);
+                                    style.visuals.widgets.inactive.bg_fill = input_bg;
+                                    style.visuals.widgets.hovered.bg_fill = input_bg;
+                                    style.visuals.widgets.active.bg_fill = input_bg;
+                                    ui.set_style(style);
+                                    ui.add_sized(
+                                        [rgb_inputs_total_width, 20.0],
+                                        egui::TextEdit::singleline(&mut self.color_picker_hex_input),
+                                    )
+                                })
+                                .inner;
                             if response.changed() {
                                 if let Some(parsed) = parse_hex_color(&self.color_picker_hex_input)
                                 {
@@ -3002,107 +3088,122 @@ impl eframe::App for FigTreeGui {
                             }
                         }
                         ColorValueMode::Rgb => {
-                            ui.label(format!("RGB: {}, {}, {}", color.r(), color.g(), color.b()));
+                            let mut r = color.r() as i32;
+                            let mut g = color.g() as i32;
+                            let mut b = color.b() as i32;
+                            let mut rgb_changed = false;
+
+                            ui.scope(|ui| {
+                                let mut style = (**ui.style()).clone();
+                                let input_bg = Color32::from_gray(235);
+                                style.visuals.widgets.inactive.bg_fill = input_bg;
+                                style.visuals.widgets.hovered.bg_fill = input_bg;
+                                style.visuals.widgets.active.bg_fill = input_bg;
+                                ui.set_style(style);
+
+                                rgb_changed |= ui
+                                    .add_sized(
+                                        [rgb_input_width, 20.0],
+                                        egui::DragValue::new(&mut r)
+                                            .range(0..=255)
+                                            .speed(1.0),
+                                    )
+                                    .changed();
+                                rgb_changed |= ui
+                                    .add_sized(
+                                        [rgb_input_width, 20.0],
+                                        egui::DragValue::new(&mut g)
+                                            .range(0..=255)
+                                            .speed(1.0),
+                                    )
+                                    .changed();
+                                rgb_changed |= ui
+                                    .add_sized(
+                                        [rgb_input_width, 20.0],
+                                        egui::DragValue::new(&mut b)
+                                            .range(0..=255)
+                                            .speed(1.0),
+                                    )
+                                    .changed();
+                            });
+
+                            if rgb_changed {
+                                color = Color32::from_rgb(r as u8, g as u8, b as u8);
+                                self.color_picker_hex_input =
+                                    format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+                            }
                         }
                     }
                 });
 
                 ui.separator();
 
+                let mut picker_changed = false;
+                let palette_colors = self.picker_palette_colors();
                 ui.horizontal(|ui| {
-                    ui.label("Preview:");
-                    let preview = egui::Button::new(" ")
-                        .fill(color)
-                        .min_size(egui::vec2(28.0, 28.0));
-                    if ui.add(preview).clicked() {
-                        request_popup_open = true;
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let shown = palette_colors.len().min(10);
+                    if shown > 0 {
+                        let spacing = ui.spacing().item_spacing.x;
+                        let row_width = ui.available_width().max(80.0);
+                        let cell = ((row_width - spacing * (shown as f32 - 1.0)) / shown as f32)
+                            .clamp(11.0, 20.0);
+                        for palette_color in palette_colors.into_iter().take(shown) {
+                            let (rect, response) =
+                                ui.allocate_exact_size(egui::vec2(cell, cell), egui::Sense::click());
+                            ui.painter()
+                                .rect_filled(rect.shrink(1.0), 3.0, palette_color);
+                            if response.clicked() {
+                                color = palette_color;
+                                picker_changed = true;
+                            }
+                        }
                     }
                 });
+
+                // Keep the built-in picker body, but clip away its first control row (U8/copy/RGB).
+                let clip_top = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                let side_padding = 0.0;
+                let picker_height = 250.0;
+                let row_width = ui.available_width().max(96.0);
+                let (row_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(row_width, picker_height), egui::Sense::hover());
+                let picker_rect = row_rect.shrink2(egui::vec2(side_padding, 0.0));
+                let picker_width = picker_rect.width().max(80.0);
+                let shifted_rect = picker_rect.translate(egui::vec2(0.0, -clip_top));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(shifted_rect), |ui| {
+                    ui.set_clip_rect(picker_rect);
+                    let mut style = (**ui.style()).clone();
+                    style.spacing.slider_width = picker_width;
+                    style.spacing.item_spacing *= 0.8;
+                    ui.set_style(style);
+                    if color_picker::color_picker_color32(
+                        ui,
+                        &mut color,
+                        color_picker::Alpha::Opaque,
+                    ) {
+                        picker_changed = true;
+                    }
+                });
+
+                if picker_changed {
+                    self.color_picker_hex_input =
+                        format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+                }
 
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Apply").clicked() {
                         self.apply_color_to_selection(color);
+                        self.record_recent_color(color);
                         self.color_picker_open = false;
                         ctx.request_repaint();
-                        self.color_picker_popup_open = false;
                     }
                     if ui.button("Cancel").clicked() {
                         self.color_picker_open = false;
-                        self.color_picker_popup_open = false;
                     }
                 });
             });
-
-            if let Some(output) = window_output {
-                window_rect = Some(output.response.rect);
-            }
-
-            if open {
-                self.color_picker_popup_rect = window_rect;
-                if request_popup_open {
-                    self.color_picker_popup_open = true;
-                }
-            } else {
-                self.color_picker_popup_open = false;
-                self.color_picker_popup_rect = None;
-            }
-
-            if self.color_picker_popup_open {
-                if let Some(parent_rect) = self.color_picker_popup_rect {
-                    let mut popup_color = color;
-                    let popup_pos = parent_rect.right_top() + egui::vec2(12.0, 0.0);
-                    egui::Area::new("color_picker_popup".into())
-                        .order(egui::Order::Foreground)
-                        .fixed_pos(popup_pos)
-                        .show(ctx, |ui| {
-                            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                ui.set_width(140.0);
-                                let mut popup_changed = false;
-                                ui.scope(|ui| {
-                                    let mut style = (**ui.style()).clone();
-                                    style.spacing.slider_width *= 0.6;
-                                    style.spacing.item_spacing *= 0.8;
-                                    ui.set_style(style);
-
-                                    if color_picker::color_picker_color32(
-                                        ui,
-                                        &mut popup_color,
-                                        color_picker::Alpha::Opaque,
-                                    ) {
-                                        popup_changed = true;
-                                    }
-                                });
-
-                                ui.separator();
-                                if ui.button("Close").clicked() {
-                                    self.color_picker_popup_open = false;
-                                }
-
-                                if popup_changed {
-                                    self.color_picker_hex_input = format!(
-                                        "#{:02X}{:02X}{:02X}",
-                                        popup_color.r(),
-                                        popup_color.g(),
-                                        popup_color.b()
-                                    );
-                                }
-                            });
-                        });
-
-                    if self.color_picker_popup_open
-                        && (popup_color.r() != color.r()
-                            || popup_color.g() != color.g()
-                            || popup_color.b() != color.b())
-                    {
-                        color = popup_color;
-                        self.color_picker_hex_input =
-                            format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
-                    }
-                } else {
-                    self.color_picker_popup_open = false;
-                }
-            }
 
             self.color_picker_color = color;
             self.color_picker_open = open && self.color_picker_open;
@@ -4381,7 +4482,8 @@ impl eframe::App for FigTreeGui {
                         ShapeColorMode::Fixed => {
                             ui.horizontal(|ui| {
                                 ui.label("Color:");
-                                ui.color_edit_button_srgba(
+                                Self::compact_shape_color_button(
+                                    ui,
                                     &mut self.tree_painter.tip_shape_fixed_color,
                                 );
                             });
@@ -4393,7 +4495,7 @@ impl eframe::App for FigTreeGui {
                                 let mut color = self.tip_shape_selection_color();
                                 let changed = ui
                                     .add_enabled_ui(has_tip_selection, |ui| {
-                                        ui.color_edit_button_srgba(&mut color).changed()
+                                        Self::compact_shape_color_button(ui, &mut color).changed()
                                     })
                                     .inner;
                                 if changed {
@@ -4558,7 +4660,8 @@ impl eframe::App for FigTreeGui {
                             ShapeColorMode::Fixed => {
                                 ui.horizontal(|ui| {
                                     ui.label("Color:");
-                                    ui.color_edit_button_srgba(
+                                    Self::compact_shape_color_button(
+                                        ui,
                                         &mut self.tree_painter.node_shape_fixed_color,
                                     );
                                 });
@@ -4579,7 +4682,7 @@ impl eframe::App for FigTreeGui {
                                     let mut color = self.node_shape_selection_color();
                                     let changed = ui
                                         .add_enabled_ui(has_node_selection, |ui| {
-                                            ui.color_edit_button_srgba(&mut color).changed()
+                                            Self::compact_shape_color_button(ui, &mut color).changed()
                                         })
                                         .inner;
                                     if changed {
