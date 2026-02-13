@@ -879,19 +879,19 @@ pub fn build_tree_scene(
     }
 
     if painter.show_scale_bar && layout.width > f32::EPSILON {
-        let tick = nice_tick_span(layout.width);
+        let tick = painter.scale_bar_range.max(1e-6);
         let scale_x = if layout.width <= f32::EPSILON {
             1.0
         } else {
             transform_inner.width() / layout.width
         };
         let bar_pixels = tick * scale_x;
-        let baseline = to_local(canvas_inner.max).y - 18.0;
+        let baseline = to_local(canvas_inner.max).y - (painter.scale_bar_font_size + 7.0);
         let start = Pos2::new(to_local(canvas_inner.min).x + 32.0, baseline);
         let end = Pos2::new(start.x + bar_pixels, baseline);
         let c = Color32::from_rgb(210, 215, 220);
         let stroke = StrokeStyle {
-            width: 2.0,
+            width: painter.scale_bar_line_width.max(0.5),
             color: c,
             dash: None,
         };
@@ -912,10 +912,13 @@ pub fn build_tree_scene(
         });
         primitives.push(ScenePrimitive::Text {
             text: format!("Scale: {tick:.3}"),
-            anchor: Pos2::new((start.x + end.x) * 0.5, baseline - 24.0),
+            anchor: Pos2::new(
+                (start.x + end.x) * 0.5,
+                baseline - (painter.scale_bar_font_size + 13.0),
+            ),
             angle: 0.0,
             align: egui::Align2::CENTER_CENTER,
-            size: 11.0,
+            size: painter.scale_bar_font_size,
             color: Color32::from_rgb(220, 225, 230),
         });
     }
@@ -1289,15 +1292,4 @@ fn push_shape_primitive(
             });
         }
     }
-}
-
-fn nice_tick_span(tree_width: f32) -> f32 {
-    let raw = tree_width / 5.0;
-    let exponent = raw.abs().log10().floor();
-    let base = 10_f32.powf(exponent);
-    [1.0, 2.0, 5.0, 10.0]
-        .into_iter()
-        .map(|m| m * base)
-        .find(|v| *v >= raw)
-        .unwrap_or(10.0 * base)
 }

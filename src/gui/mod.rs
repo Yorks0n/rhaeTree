@@ -1325,6 +1325,18 @@ impl FigTreeGui {
             self.tree_painter.show_scale_bar.to_string(),
         );
         settings.insert(
+            "painter.scaleBarRange".to_string(),
+            format!("{:.6}", self.tree_painter.scale_bar_range),
+        );
+        settings.insert(
+            "painter.scaleBarFontSize".to_string(),
+            format!("{:.6}", self.tree_painter.scale_bar_font_size),
+        );
+        settings.insert(
+            "painter.scaleBarLineWidth".to_string(),
+            format!("{:.6}", self.tree_painter.scale_bar_line_width),
+        );
+        settings.insert(
             "painter.showTipShapes".to_string(),
             self.tree_painter.show_tip_shapes.to_string(),
         );
@@ -1626,6 +1638,24 @@ impl FigTreeGui {
             &mut self.tree_painter.show_branch_labels,
         );
         apply_bool_setting(settings, "painter.showScaleBar", &mut self.tree_painter.show_scale_bar);
+        if let Some(v) = settings
+            .get("painter.scaleBarRange")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.scale_bar_range = v.max(1e-6);
+        }
+        if let Some(v) = settings
+            .get("painter.scaleBarFontSize")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.scale_bar_font_size = v.max(6.0);
+        }
+        if let Some(v) = settings
+            .get("painter.scaleBarLineWidth")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.scale_bar_line_width = v.max(0.5);
+        }
         apply_bool_setting(settings, "painter.showTipShapes", &mut self.tree_painter.show_tip_shapes);
         apply_bool_setting(
             settings,
@@ -2278,6 +2308,15 @@ impl FigTreeGui {
         self.tree_painter.show_node_labels.hash(&mut hasher);
         self.tree_painter.show_branch_labels.hash(&mut hasher);
         self.tree_painter.show_scale_bar.hash(&mut hasher);
+        self.tree_painter.scale_bar_range.to_bits().hash(&mut hasher);
+        self.tree_painter
+            .scale_bar_font_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter
+            .scale_bar_line_width
+            .to_bits()
+            .hash(&mut hasher);
         self.tree_painter.show_tip_shapes.hash(&mut hasher);
         self.tree_painter.show_node_shapes.hash(&mut hasher);
         self.tree_painter.tip_shape.hash(&mut hasher);
@@ -5103,7 +5142,32 @@ impl eframe::App for FigTreeGui {
                     toggle
                 });
 
-                scale_state.show_body_indented(&scale_header_response.response, ui, |_ui| {});
+                scale_state.show_body_indented(&scale_header_response.response, ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Scale Range:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.tree_painter.scale_bar_range)
+                                .speed(0.01)
+                                .range(0.000001..=1_000_000.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Font Size:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.tree_painter.scale_bar_font_size)
+                                .speed(0.25)
+                                .range(6.0..=64.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Line Width:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.tree_painter.scale_bar_line_width)
+                                .speed(0.1)
+                                .range(0.5..=20.0),
+                        );
+                    });
+                });
                 self.panel_states.scale_bar_expanded = scale_state.is_open();
 
                 let newly_opened = if !prev_panel_states.layout_expanded && self.panel_states.layout_expanded {
