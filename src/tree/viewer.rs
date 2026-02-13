@@ -262,7 +262,7 @@ impl TreeViewer {
     }
 
     pub fn set_vertical_expansion(&mut self, expansion: f32) {
-        self.vertical_expansion = expansion.max(1.0).min(2.0);
+        self.vertical_expansion = expansion.max(1.0).min(5.0);
     }
 
     pub fn reroot_at_branch(&mut self, node_id: NodeId) {

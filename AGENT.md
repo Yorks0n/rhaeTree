@@ -90,7 +90,7 @@ cargo run -- --headless <tree_file>
 ### 4.6 样式与参数（当前范围）
 
 - Zoom：`1.0 ..= 5.0`（仅 Rectangular/Slanted 生效）
-- Expansion：`1.0 ..= 2.0`
+- Expansion：`1.0 ..= 5.0`
 - Branch Line Width：`1.0 ..= 5.0`
 - Node radius：`1.0 ..= 10.0`
 - Highlight 默认色：`Color32::from_rgb(255, 255, 180)`（不提供透明度面板）

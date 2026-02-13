@@ -3957,7 +3957,7 @@ impl eframe::App for FigTreeGui {
 
                             ui.label("Expansion:");
                             ui.add(
-                                egui::Slider::new(&mut self.tree_viewer.vertical_expansion, 1.0..=2.0)
+                                egui::Slider::new(&mut self.tree_viewer.vertical_expansion, 1.0..=5.0)
                                     .show_value(false),
                             );
                         }
