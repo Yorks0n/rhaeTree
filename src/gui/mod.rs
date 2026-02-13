@@ -38,6 +38,7 @@ pub struct FigTreeGui {
     color_picker_hex_input: String,
     color_picker_mode: ColorValueMode,
     color_picker_panel: ColorPanelMode,
+    color_picker_target: ColorPickerTarget,
     color_picker_color: Color32,
     color_picker_origin: Option<egui::Pos2>,
     color_picker_popup_open: bool,
@@ -167,6 +168,15 @@ enum ColorValueMode {
 enum ColorPanelMode {
     Custom,
     Library,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ColorPickerTarget {
+    Selection,
+    TipShapeFixed,
+    NodeShapeFixed,
+    TipShapeSelection,
+    NodeShapeSelection,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -587,6 +597,7 @@ impl FigTreeGui {
             color_picker_hex_input: String::new(),
             color_picker_mode: ColorValueMode::Hex,
             color_picker_panel: ColorPanelMode::Custom,
+            color_picker_target: ColorPickerTarget::Selection,
             color_picker_color: Color32::WHITE,
             color_picker_origin: None,
             color_picker_popup_open: false,
@@ -923,16 +934,35 @@ impl FigTreeGui {
         deduped
     }
 
-    fn compact_shape_color_button(ui: &mut egui::Ui, color: &mut Color32) -> egui::Response {
-        ui.scope(|ui| {
-            let mut style = (**ui.style()).clone();
-            style.spacing.slider_width *= 0.6;
-            style.spacing.item_spacing *= 0.8;
-            ui.set_style(style);
-            ui.set_width(140.0);
-            ui.color_edit_button_srgba(color)
-        })
-        .inner
+    fn open_color_picker(
+        &mut self,
+        origin: egui::Pos2,
+        initial: Color32,
+        target: ColorPickerTarget,
+    ) {
+        self.color_picker_color = initial;
+        self.color_picker_hex_input = format!("#{:02X}{:02X}{:02X}", initial.r(), initial.g(), initial.b());
+        self.color_picker_mode = ColorValueMode::Hex;
+        self.color_picker_panel = ColorPanelMode::Custom;
+        self.color_picker_target = target;
+        self.color_picker_open = true;
+        self.color_picker_origin = Some(origin);
+        self.color_picker_popup_open = false;
+        self.color_picker_popup_rect = None;
+    }
+
+    fn apply_color_picker_target(&mut self, color: Color32) {
+        match self.color_picker_target {
+            ColorPickerTarget::Selection => self.apply_color_to_selection(color),
+            ColorPickerTarget::TipShapeFixed => {
+                self.tree_painter.tip_shape_fixed_color = color;
+            }
+            ColorPickerTarget::NodeShapeFixed => {
+                self.tree_painter.node_shape_fixed_color = color;
+            }
+            ColorPickerTarget::TipShapeSelection => self.apply_tip_shape_color_to_selection(color),
+            ColorPickerTarget::NodeShapeSelection => self.apply_node_shape_color_to_selection(color),
+        }
     }
 
     fn tip_shape_selection_color(&self) -> Color32 {
@@ -2867,19 +2897,11 @@ impl eframe::App for FigTreeGui {
                                 ui.add_enabled(has_selection, egui::Button::new("🎨 Color"));
                             if color_response.clicked() {
                                 let initial = self.selection_current_color();
-                                self.color_picker_color = initial;
-                                self.color_picker_hex_input = format!(
-                                    "#{:02X}{:02X}{:02X}",
-                                    initial.r(),
-                                    initial.g(),
-                                    initial.b()
+                                self.open_color_picker(
+                                    color_response.rect.right_top(),
+                                    initial,
+                                    ColorPickerTarget::Selection,
                                 );
-                                self.color_picker_mode = ColorValueMode::Hex;
-                                self.color_picker_panel = ColorPanelMode::Custom;
-                                self.color_picker_open = true;
-                                self.color_picker_origin = Some(color_response.rect.right_top());
-                                self.color_picker_popup_open = false;
-                                self.color_picker_popup_rect = None;
                             }
 
                             // Highlight button
@@ -3271,7 +3293,7 @@ impl eframe::App for FigTreeGui {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Apply").clicked() {
-                        self.apply_color_to_selection(color);
+                        self.apply_color_picker_target(color);
                         self.record_recent_color(color);
                         self.color_picker_open = false;
                         ctx.request_repaint();
@@ -4559,24 +4581,37 @@ impl eframe::App for FigTreeGui {
                         ShapeColorMode::Fixed => {
                             ui.horizontal(|ui| {
                                 ui.label("Color:");
-                                Self::compact_shape_color_button(
-                                    ui,
-                                    &mut self.tree_painter.tip_shape_fixed_color,
+                                let resp = ui.add(
+                                    egui::Button::new(" ")
+                                        .fill(self.tree_painter.tip_shape_fixed_color)
+                                        .min_size(egui::vec2(24.0, 20.0)),
                                 );
+                                if resp.clicked() {
+                                    self.open_color_picker(
+                                        resp.rect.right_top(),
+                                        self.tree_painter.tip_shape_fixed_color,
+                                        ColorPickerTarget::TipShapeFixed,
+                                    );
+                                }
                             });
                         }
                         ShapeColorMode::UserSelection => {
                             ui.horizontal(|ui| {
                                 ui.label("Color:");
                                 let has_tip_selection = !self.tree_viewer.selected_tips().is_empty();
-                                let mut color = self.tip_shape_selection_color();
-                                let changed = ui
-                                    .add_enabled_ui(has_tip_selection, |ui| {
-                                        Self::compact_shape_color_button(ui, &mut color).changed()
-                                    })
-                                    .inner;
-                                if changed {
-                                    self.apply_tip_shape_color_to_selection(color);
+                                let current_color = self.tip_shape_selection_color();
+                                let resp = ui.add_enabled(
+                                    has_tip_selection,
+                                    egui::Button::new(" ")
+                                        .fill(current_color)
+                                        .min_size(egui::vec2(24.0, 20.0)),
+                                );
+                                if resp.clicked() {
+                                    self.open_color_picker(
+                                        resp.rect.right_top(),
+                                        current_color,
+                                        ColorPickerTarget::TipShapeSelection,
+                                    );
                                 }
                             });
                         }
@@ -4737,10 +4772,18 @@ impl eframe::App for FigTreeGui {
                             ShapeColorMode::Fixed => {
                                 ui.horizontal(|ui| {
                                     ui.label("Color:");
-                                    Self::compact_shape_color_button(
-                                        ui,
-                                        &mut self.tree_painter.node_shape_fixed_color,
+                                    let resp = ui.add(
+                                        egui::Button::new(" ")
+                                            .fill(self.tree_painter.node_shape_fixed_color)
+                                            .min_size(egui::vec2(24.0, 20.0)),
                                     );
+                                    if resp.clicked() {
+                                        self.open_color_picker(
+                                            resp.rect.right_top(),
+                                            self.tree_painter.node_shape_fixed_color,
+                                            ColorPickerTarget::NodeShapeFixed,
+                                        );
+                                    }
                                 });
                             }
                             ShapeColorMode::UserSelection => {
@@ -4751,19 +4794,24 @@ impl eframe::App for FigTreeGui {
                                         .current_tree()
                                         .map(|tree| {
                                             self.tree_viewer
-                                                .selected_nodes()
+                                        .selected_nodes()
                                                 .iter()
                                                 .any(|id| !tree.nodes[*id].is_leaf())
                                         })
                                         .unwrap_or(false);
-                                    let mut color = self.node_shape_selection_color();
-                                    let changed = ui
-                                        .add_enabled_ui(has_node_selection, |ui| {
-                                            Self::compact_shape_color_button(ui, &mut color).changed()
-                                        })
-                                        .inner;
-                                    if changed {
-                                        self.apply_node_shape_color_to_selection(color);
+                                    let current_color = self.node_shape_selection_color();
+                                    let resp = ui.add_enabled(
+                                        has_node_selection,
+                                        egui::Button::new(" ")
+                                            .fill(current_color)
+                                            .min_size(egui::vec2(24.0, 20.0)),
+                                    );
+                                    if resp.clicked() {
+                                        self.open_color_picker(
+                                            resp.rect.right_top(),
+                                            current_color,
+                                            ColorPickerTarget::NodeShapeSelection,
+                                        );
                                     }
                                 });
                             }
