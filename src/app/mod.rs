@@ -29,11 +29,11 @@ pub struct AppConfig {
     pub export_format: ExportFormat,
 
     /// Canvas width in pixels
-    #[arg(long, default_value_t = 800)]
+    #[arg(long, default_value_t = 1100)]
     pub width: u32,
 
     /// Canvas height in pixels
-    #[arg(long, default_value_t = 600)]
+    #[arg(long, default_value_t = 760)]
     pub height: u32,
 
     /// Toggle fast-render mode (reserved for future optimisations)
