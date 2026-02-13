@@ -59,6 +59,7 @@ pub struct FigTreeGui {
     node_bar_picker_popup_rect: Option<egui::Rect>,
     filter_text: String,
     filter_mode: FilterMode,
+    pending_filter_auto_scroll: bool,
     root_tree_enabled: bool,
     root_method: RootMethod,
     user_root_snapshot: Option<TreeSnapshot>,
@@ -633,6 +634,7 @@ impl FigTreeGui {
             node_bar_picker_popup_rect: None,
             filter_text: String::new(),
             filter_mode: FilterMode::Contains,
+            pending_filter_auto_scroll: false,
             root_tree_enabled: false,
             root_method: RootMethod::UserSelection,
             user_root_snapshot: None,
@@ -818,6 +820,7 @@ impl FigTreeGui {
     fn apply_filter(&mut self) {
         if self.filter_text.trim().is_empty() {
             self.tree_viewer.clear_selection();
+            self.pending_filter_auto_scroll = false;
             return;
         }
 
@@ -825,6 +828,7 @@ impl FigTreeGui {
         self.tree_viewer.set_selection_mode(SelectionMode::Taxa);
         self.tree_viewer
             .select_taxa(Some("!name"), mode, &self.filter_text, false);
+        self.pending_filter_auto_scroll = true;
     }
 
     fn selection_current_color(&self) -> Color32 {
@@ -2553,6 +2557,20 @@ impl FigTreeGui {
                 .collect();
 
             self.tree_canvas_rect = Some(rect);
+
+            if self.pending_filter_auto_scroll {
+                let selected_tips = self.tree_viewer.selected_tips();
+                let first_hit = tip_label_hits
+                    .iter()
+                    .find(|hit| selected_tips.contains(&hit.node_id));
+                if let Some(hit) = first_hit {
+                    let visible_rect = ui.clip_rect();
+                    if !visible_rect.intersects(hit.rect) {
+                        ui.scroll_to_rect(hit.rect, Some(egui::Align::Center));
+                    }
+                }
+                self.pending_filter_auto_scroll = false;
+            }
 
             if response.clicked() {
                 if let Some(pointer_pos) = response.interact_pointer_pos() {
