@@ -165,10 +165,14 @@ pub struct TreePainter {
     pub align_tip_labels: bool,
     pub tip_label_display: TipLabelDisplay,
     pub node_label_display: NodeLabelDisplay,
+    pub branch_label_display: BranchLabelDisplay,
     pub node_label_attribute: Option<String>,
     pub node_label_font_size: f32,
+    pub branch_label_font_size: f32,
     pub node_label_format: TipLabelNumberFormat,
+    pub branch_label_format: TipLabelNumberFormat,
     pub node_label_precision: usize,
+    pub branch_label_precision: usize,
     pub tip_label_font_family: TipLabelFontFamily,
     pub tip_label_font_size: f32,
     pub tip_label_format: TipLabelNumberFormat,
@@ -220,10 +224,14 @@ impl Default for TreePainter {
             align_tip_labels: false,
             tip_label_display: TipLabelDisplay::Labels,
             node_label_display: NodeLabelDisplay::Labels,
+            branch_label_display: BranchLabelDisplay::BranchLength,
             node_label_attribute: None,
             node_label_font_size: 10.0,
+            branch_label_font_size: 10.0,
             node_label_format: TipLabelNumberFormat::Decimal,
+            branch_label_format: TipLabelNumberFormat::Decimal,
             node_label_precision: 2,
+            branch_label_precision: 2,
             tip_label_font_family: TipLabelFontFamily::Proportional,
             tip_label_font_size: 13.0,
             tip_label_format: TipLabelNumberFormat::Decimal,
@@ -860,6 +868,19 @@ impl TreePainter {
         }
     }
 
+    pub fn branch_label_text(&self, node: &TreeNode) -> Option<String> {
+        match self.branch_label_display {
+            BranchLabelDisplay::Names => node.name.clone(),
+            BranchLabelDisplay::BranchLength => node.length.map(|value| {
+                Self::format_numeric_with(
+                    value,
+                    self.branch_label_format,
+                    self.branch_label_precision,
+                )
+            }),
+        }
+    }
+
     pub fn compute_node_heights(&self, tree: &Tree) -> HashMap<NodeId, f64> {
         let mut heights = HashMap::new();
         fn dfs(tree: &Tree, node_id: NodeId, out: &mut HashMap<NodeId, f64>) -> f64 {
@@ -1195,6 +1216,25 @@ pub enum NodeLabelDisplay {
     BranchLength,
     NodeHeight,
     Attribute,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BranchLabelDisplay {
+    Names,
+    BranchLength,
+}
+
+impl BranchLabelDisplay {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Names => "Names",
+            Self::BranchLength => "Branch Length",
+        }
+    }
+
+    pub fn is_numeric(self) -> bool {
+        matches!(self, Self::BranchLength)
+    }
 }
 
 impl NodeLabelDisplay {

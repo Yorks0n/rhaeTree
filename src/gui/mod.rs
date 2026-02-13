@@ -14,8 +14,8 @@ use rfd::FileDialog;
 use crate::app::{AppConfig, ExportFormat};
 use crate::io;
 use crate::tree::painter::{
-    NodeLabelDisplay, ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelDisplay, TipLabelFontFamily,
-    TipLabelNumberFormat,
+    BranchLabelDisplay, NodeLabelDisplay, ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelDisplay,
+    TipLabelFontFamily, TipLabelNumberFormat,
 };
 use crate::tree::skia_renderer::SkiaTreeRenderer;
 use crate::tree::vello_renderer::VelloTreeRenderer;
@@ -529,6 +529,21 @@ fn parse_tip_label_display(s: &str) -> Option<TipLabelDisplay> {
         "names" => Some(TipLabelDisplay::Names),
         "labels" => Some(TipLabelDisplay::Labels),
         "branch_length" => Some(TipLabelDisplay::BranchLength),
+        _ => None,
+    }
+}
+
+fn branch_label_display_name(value: BranchLabelDisplay) -> &'static str {
+    match value {
+        BranchLabelDisplay::Names => "names",
+        BranchLabelDisplay::BranchLength => "branch_length",
+    }
+}
+
+fn parse_branch_label_display(s: &str) -> Option<BranchLabelDisplay> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "names" => Some(BranchLabelDisplay::Names),
+        "branch_length" => Some(BranchLabelDisplay::BranchLength),
         _ => None,
     }
 }
@@ -1411,6 +1426,10 @@ impl FigTreeGui {
             node_label_display_name(self.tree_painter.node_label_display).to_string(),
         );
         settings.insert(
+            "painter.branchLabelDisplay".to_string(),
+            branch_label_display_name(self.tree_painter.branch_label_display).to_string(),
+        );
+        settings.insert(
             "painter.nodeLabelAttribute".to_string(),
             self.tree_painter
                 .node_label_attribute
@@ -1428,6 +1447,18 @@ impl FigTreeGui {
         settings.insert(
             "painter.nodeLabelPrecision".to_string(),
             self.tree_painter.node_label_precision.to_string(),
+        );
+        settings.insert(
+            "painter.branchLabelFontSize".to_string(),
+            format!("{:.6}", self.tree_painter.branch_label_font_size),
+        );
+        settings.insert(
+            "painter.branchLabelNumberFormat".to_string(),
+            tip_label_number_format_name(self.tree_painter.branch_label_format).to_string(),
+        );
+        settings.insert(
+            "painter.branchLabelPrecision".to_string(),
+            self.tree_painter.branch_label_precision.to_string(),
         );
         settings.insert(
             "painter.tipLabelFontFamily".to_string(),
@@ -1716,6 +1747,12 @@ impl FigTreeGui {
         {
             self.tree_painter.node_label_display = v;
         }
+        if let Some(v) = settings
+            .get("painter.branchLabelDisplay")
+            .and_then(|s| parse_branch_label_display(s))
+        {
+            self.tree_painter.branch_label_display = v;
+        }
         if let Some(v) = settings.get("painter.nodeLabelAttribute") {
             self.tree_painter.node_label_attribute =
                 (!v.eq_ignore_ascii_case("null")).then(|| v.to_string());
@@ -1737,6 +1774,24 @@ impl FigTreeGui {
             .and_then(|s| s.parse::<usize>().ok())
         {
             self.tree_painter.node_label_precision = v.min(12);
+        }
+        if let Some(v) = settings
+            .get("painter.branchLabelFontSize")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
+            self.tree_painter.branch_label_font_size = v.max(6.0);
+        }
+        if let Some(v) = settings
+            .get("painter.branchLabelNumberFormat")
+            .and_then(|s| parse_tip_label_number_format(s))
+        {
+            self.tree_painter.branch_label_format = v;
+        }
+        if let Some(v) = settings
+            .get("painter.branchLabelPrecision")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            self.tree_painter.branch_label_precision = v.min(12);
         }
         if let Some(v) = settings
             .get("painter.tipLabelFontFamily")
@@ -2243,13 +2298,20 @@ impl FigTreeGui {
         self.tree_painter.align_tip_labels.hash(&mut hasher);
         self.tree_painter.tip_label_display.hash(&mut hasher);
         self.tree_painter.node_label_display.hash(&mut hasher);
+        self.tree_painter.branch_label_display.hash(&mut hasher);
         self.tree_painter.node_label_attribute.hash(&mut hasher);
         self.tree_painter
             .node_label_font_size
             .to_bits()
             .hash(&mut hasher);
+        self.tree_painter
+            .branch_label_font_size
+            .to_bits()
+            .hash(&mut hasher);
         self.tree_painter.node_label_format.hash(&mut hasher);
+        self.tree_painter.branch_label_format.hash(&mut hasher);
         self.tree_painter.node_label_precision.hash(&mut hasher);
+        self.tree_painter.branch_label_precision.hash(&mut hasher);
         self.tree_painter.tip_label_font_family.hash(&mut hasher);
         self.tree_painter
             .tip_label_font_size
@@ -4429,7 +4491,70 @@ impl eframe::App for FigTreeGui {
                     toggle
                 });
 
-                branch_state.show_body_indented(&branch_header_response.response, ui, |_ui| {});
+                branch_state.show_body_indented(&branch_header_response.response, ui, |ui| {
+                    if matches!(self.tree_painter.branch_label_display, BranchLabelDisplay::Names) {
+                        self.tree_painter.branch_label_display = BranchLabelDisplay::BranchLength;
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.label("Display:");
+                        egui::ComboBox::from_id_salt("branch_labels_display")
+                            .selected_text(self.tree_painter.branch_label_display.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.tree_painter.branch_label_display,
+                                    BranchLabelDisplay::BranchLength,
+                                    BranchLabelDisplay::BranchLength.label(),
+                                );
+                            });
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Font Size:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.tree_painter.branch_label_font_size)
+                                .speed(0.25)
+                                .range(6.0..=48.0),
+                        );
+                    });
+
+                    let is_numeric = self.tree_painter.branch_label_display.is_numeric();
+                    ui.horizontal(|ui| {
+                        ui.label("Format:");
+                        ui.add_enabled_ui(is_numeric, |ui| {
+                            egui::ComboBox::from_id_salt("branch_labels_format")
+                                .selected_text(self.tree_painter.branch_label_format.label())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.branch_label_format,
+                                        TipLabelNumberFormat::Decimal,
+                                        "Decimal",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.branch_label_format,
+                                        TipLabelNumberFormat::Scientific,
+                                        "Scientific",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.tree_painter.branch_label_format,
+                                        TipLabelNumberFormat::Percentage,
+                                        "Percentage",
+                                    );
+                                });
+                        });
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Sig Digits:");
+                        ui.add_enabled_ui(is_numeric, |ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.tree_painter.branch_label_precision)
+                                    .speed(0.25)
+                                    .range(0.0..=10.0),
+                            );
+                        });
+                    });
+                });
                 self.panel_states.branch_labels_expanded = branch_state.is_open();
 
                 // Tip Shapes

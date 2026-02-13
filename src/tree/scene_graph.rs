@@ -478,6 +478,41 @@ pub fn build_tree_scene(
     };
 
     let mut tip_label_hits = Vec::new();
+    let branch_terminal_segments: HashMap<NodeId, ((f32, f32), (f32, f32))> = layout
+        .continuous_branches
+        .iter()
+        .filter_map(|branch| {
+            if branch.points.len() >= 2 {
+                let n = branch.points.len();
+                Some((branch.child, (branch.points[n - 2], branch.points[n - 1])))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let circular_arc_by_child: HashMap<NodeId, (f32, f32, f32, f32, f32)> = layout
+        .arc_segments
+        .iter()
+        .map(|arc| {
+            (
+                arc.child,
+                (
+                    arc.center.0,
+                    arc.center.1,
+                    arc.radius,
+                    arc.start_angle,
+                    arc.end_angle,
+                ),
+            )
+        })
+        .collect();
+    let circular_center_world = layout
+        .arc_segments
+        .first()
+        .map(|arc| arc.center)
+        .or_else(|| tree.root.map(|root| layout.positions[root]))
+        .unwrap_or((layout.width * 0.5, layout.height * 0.5));
+    let radial_center_screen = to_local(to_screen(circular_center_world));
     let node_heights = if painter.show_node_labels
         && matches!(painter.node_label_display, crate::tree::painter::NodeLabelDisplay::NodeHeight)
     {
@@ -656,11 +691,64 @@ pub fn build_tree_scene(
             }
         } else if painter.show_node_labels {
             if let Some(name) = painter.node_label_text(tree, node, node_heights.as_ref()) {
+                let (anchor, angle, align) = match layout.layout_type {
+                    TreeLayoutType::Rectangular => {
+                        (Pos2::new(p.x + 8.0, p.y), 0.0, egui::Align2::LEFT_CENTER)
+                    }
+                    TreeLayoutType::Radial => {
+                        if let Some(parent_id) = node.parent {
+                            let parent_p = to_local(to_screen(layout.positions[parent_id]));
+                            let dir = p - parent_p;
+                            if dir.length_sq() > 1e-6 {
+                                let unit = dir / dir.length();
+                                let anchor = p + unit * 10.0;
+                                let (angle, align) = readable_rotation(dir.y.atan2(dir.x));
+                                (anchor, angle, align)
+                            } else {
+                                (Pos2::new(p.x + 8.0, p.y), 0.0, egui::Align2::LEFT_CENTER)
+                            }
+                        } else {
+                            (Pos2::new(p.x + 8.0, p.y), 0.0, egui::Align2::LEFT_CENTER)
+                        }
+                    }
+                    TreeLayoutType::Circular => {
+                        if let Some(parent_id) = node.parent {
+                            let parent_p = to_local(to_screen(layout.positions[parent_id]));
+                            let dir = p - parent_p;
+                            if dir.length_sq() > 1e-6 {
+                                let unit = dir / dir.length();
+                                let anchor = p + unit * 8.0;
+                                let (angle, align) = readable_rotation(dir.y.atan2(dir.x));
+                                (anchor, angle, align)
+                            } else {
+                                (Pos2::new(p.x + 8.0, p.y), 0.0, egui::Align2::LEFT_CENTER)
+                            }
+                        } else {
+                            (Pos2::new(p.x + 8.0, p.y), 0.0, egui::Align2::LEFT_CENTER)
+                        }
+                    }
+                    _ => {
+                        if let Some(parent_id) = node.parent {
+                            let parent_p = to_local(to_screen(layout.positions[parent_id]));
+                            let dir = p - parent_p;
+                            if dir.length_sq() > 1e-6 {
+                                let unit = dir / dir.length();
+                                let anchor = p + unit * 8.0;
+                                let (angle, align) = readable_rotation(dir.y.atan2(dir.x));
+                                (anchor, angle, align)
+                            } else {
+                                (Pos2::new(p.x + 8.0, p.y), 0.0, egui::Align2::LEFT_CENTER)
+                            }
+                        } else {
+                            (Pos2::new(p.x + 8.0, p.y), 0.0, egui::Align2::LEFT_CENTER)
+                        }
+                    }
+                };
                 primitives.push(ScenePrimitive::Text {
                     text: name,
-                    anchor: Pos2::new(p.x + 8.0, p.y),
-                    angle: 0.0,
-                    align: egui::Align2::LEFT_CENTER,
+                    anchor,
+                    angle,
+                    align,
                     size: painter.node_label_font_size,
                     color: painter.label_color,
                 });
@@ -668,16 +756,92 @@ pub fn build_tree_scene(
         }
 
         if painter.show_branch_labels {
-            if let (Some(length), Some(parent_id)) = (node.length, node.parent) {
-                let pp = to_local(to_screen(layout.positions[parent_id]));
-                primitives.push(ScenePrimitive::Text {
-                    text: format!("{length:.3}"),
-                    anchor: Pos2::new((pp.x + p.x) * 0.5, (pp.y + p.y) * 0.5 - 12.0),
-                    angle: 0.0,
-                    align: egui::Align2::CENTER_CENTER,
-                    size: 10.0,
-                    color: painter.branch_label_color,
-                });
+            if let Some(parent_id) = node.parent {
+                if let Some(text) = painter.branch_label_text(node) {
+                    match layout.layout_type {
+                        TreeLayoutType::Circular => {
+                            if let Some((cx, cy, radius, start_angle, end_angle)) =
+                                circular_arc_by_child.get(&node.id).copied()
+                            {
+                                let mut end = end_angle;
+                                if end <= start_angle {
+                                    end += std::f32::consts::TAU;
+                                }
+                                let mid_angle = start_angle + (end - start_angle) * 0.5;
+                                let mid_world =
+                                    (cx + radius * mid_angle.cos(), cy + radius * mid_angle.sin());
+                                let center_screen = to_local(to_screen((cx, cy)));
+                                let mut anchor = to_local(to_screen(mid_world));
+                                let outward = (anchor - center_screen).normalized();
+                                anchor += outward * 8.0;
+                                let (rotation, align) =
+                                    readable_rotation(mid_angle + std::f32::consts::FRAC_PI_2);
+                                primitives.push(ScenePrimitive::Text {
+                                    text,
+                                    anchor,
+                                    angle: rotation,
+                                    align,
+                                    size: painter.branch_label_font_size,
+                                    color: painter.branch_label_color,
+                                });
+                            } else {
+                                let pp = to_local(to_screen(layout.positions[parent_id]));
+                                let dir = p - pp;
+                                let angle = dir.y.atan2(dir.x);
+                                let (rotation, align) = readable_rotation(angle);
+                                primitives.push(ScenePrimitive::Text {
+                                    text,
+                                    anchor: Pos2::new((pp.x + p.x) * 0.5, (pp.y + p.y) * 0.5),
+                                    angle: rotation,
+                                    align,
+                                    size: painter.branch_label_font_size,
+                                    color: painter.branch_label_color,
+                                });
+                            }
+                        }
+                        TreeLayoutType::Radial | TreeLayoutType::Daylight => {
+                            let (a_w, b_w) = branch_terminal_segments
+                                .get(&node.id)
+                                .copied()
+                                .unwrap_or((layout.positions[parent_id], layout.positions[node.id]));
+                            let a = to_local(to_screen(a_w));
+                            let b = to_local(to_screen(b_w));
+                            let mut anchor = Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                            let outward = (anchor - radial_center_screen).normalized();
+                            anchor += outward * 5.0;
+                            let dir = b - a;
+                            let angle = dir.y.atan2(dir.x);
+                            let (rotation, align) = readable_rotation(angle);
+                            primitives.push(ScenePrimitive::Text {
+                                text,
+                                anchor,
+                                angle: rotation,
+                                align,
+                                size: painter.branch_label_font_size,
+                                color: painter.branch_label_color,
+                            });
+                        }
+                        TreeLayoutType::Rectangular
+                        | TreeLayoutType::Phylogram
+                        | TreeLayoutType::Cladogram
+                        | TreeLayoutType::Slanted => {
+                            let (a_w, b_w) = branch_terminal_segments
+                                .get(&node.id)
+                                .copied()
+                                .unwrap_or((layout.positions[parent_id], layout.positions[node.id]));
+                            let a = to_local(to_screen(a_w));
+                            let b = to_local(to_screen(b_w));
+                            primitives.push(ScenePrimitive::Text {
+                                text,
+                                anchor: Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5 - 10.0),
+                                angle: 0.0,
+                                align: egui::Align2::CENTER_CENTER,
+                                size: painter.branch_label_font_size,
+                                color: painter.branch_label_color,
+                            });
+                        }
+                    }
+                }
             }
         }
     }
