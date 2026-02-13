@@ -101,7 +101,9 @@ fn parse_nexus(raw: &str) -> Result<Vec<Tree>> {
     let mut trees = Vec::new();
     let mut in_trees_block = false;
     let mut in_translate_block = false;
+    let mut translate_map = BTreeMap::new();
     let mut current_tree = String::new();
+    let mut current_translate = String::new();
 
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -123,12 +125,14 @@ fn parse_nexus(raw: &str) -> Result<Vec<Tree>> {
         if upper_line.starts_with("END") || upper_line.starts_with("ENDBLOCK") {
             in_trees_block = false;
             in_translate_block = false;
+            current_translate.clear();
 
             // Process any accumulated tree definition.
             if !current_tree.is_empty() {
                 if let Ok((label, newick)) = parse_nexus_tree_line(&current_tree) {
                     let index = trees.len();
-                    if let Ok(tree) = build_tree(index, label, newick) {
+                    if let Ok(mut tree) = build_tree(index, label, newick) {
+                        apply_translate_map_to_tree(&mut tree, &translate_map);
                         trees.push(tree);
                     }
                 }
@@ -143,7 +147,18 @@ fn parse_nexus(raw: &str) -> Result<Vec<Tree>> {
 
             // Handle TRANSLATE command (often present in BEAST/MrBayes output)
             if in_translate_block || lower_line.starts_with("translate") {
-                in_translate_block = !statement_complete(trimmed);
+                if !current_translate.is_empty() {
+                    current_translate.push(' ');
+                }
+                current_translate.push_str(trimmed);
+
+                if statement_complete(&current_translate) {
+                    parse_nexus_translate_statement(&current_translate, &mut translate_map);
+                    current_translate.clear();
+                    in_translate_block = false;
+                } else {
+                    in_translate_block = true;
+                }
                 continue;
             }
 
@@ -166,7 +181,8 @@ fn parse_nexus(raw: &str) -> Result<Vec<Tree>> {
                 let statement = statement_prefix_until_semicolon(&current_tree);
                 if let Ok((label, newick)) = parse_nexus_tree_line(statement) {
                     let index = trees.len();
-                    if let Ok(tree) = build_tree(index, label, newick) {
+                    if let Ok(mut tree) = build_tree(index, label, newick) {
+                        apply_translate_map_to_tree(&mut tree, &translate_map);
                         trees.push(tree);
                     }
                 }
@@ -179,7 +195,8 @@ fn parse_nexus(raw: &str) -> Result<Vec<Tree>> {
     if !current_tree.is_empty() {
         if let Ok((label, newick)) = parse_nexus_tree_line(&current_tree) {
             let index = trees.len();
-            if let Ok(tree) = build_tree(index, label, newick) {
+            if let Ok(mut tree) = build_tree(index, label, newick) {
+                apply_translate_map_to_tree(&mut tree, &translate_map);
                 trees.push(tree);
             }
         }
@@ -470,6 +487,108 @@ fn parse_nexus_tree_line(line: &str) -> Result<(Option<String>, String)> {
     Ok((label, newick))
 }
 
+fn parse_nexus_translate_statement(statement: &str, translate_map: &mut BTreeMap<String, String>) {
+    let mut body = statement.trim();
+    if body.len() >= "translate".len() && body[..9].eq_ignore_ascii_case("translate") {
+        body = body[9..].trim_start();
+    }
+    if let Some(idx) = first_statement_semicolon(body) {
+        body = &body[..idx];
+    }
+
+    for entry in split_unquoted_commas(body) {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let Some((raw_key, raw_value)) = split_once_unquoted_whitespace(entry) else {
+            continue;
+        };
+        let key = normalize_nexus_token(raw_key);
+        let value = normalize_nexus_token(raw_value);
+        if !key.is_empty() && !value.is_empty() {
+            translate_map.insert(key, value);
+        }
+    }
+}
+
+fn apply_translate_map_to_tree(tree: &mut Tree, translate_map: &BTreeMap<String, String>) {
+    if translate_map.is_empty() {
+        return;
+    }
+    for node in &mut tree.nodes {
+        if !node.is_leaf() {
+            continue;
+        }
+        let Some(name) = node.name.as_ref() else {
+            continue;
+        };
+        if let Some(mapped) = translate_map.get(name) {
+            node.name = Some(mapped.clone());
+        }
+    }
+}
+
+fn split_unquoted_commas(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut prev = '\0';
+    for (i, ch) in s.char_indices() {
+        if ch == '\'' && !in_double && prev != '\\' {
+            in_single = !in_single;
+        } else if ch == '"' && !in_single && prev != '\\' {
+            in_double = !in_double;
+        } else if ch == ',' && !in_single && !in_double {
+            parts.push(&s[start..i]);
+            start = i + ch.len_utf8();
+        }
+        prev = ch;
+    }
+    if start <= s.len() {
+        parts.push(&s[start..]);
+    }
+    parts
+}
+
+fn split_once_unquoted_whitespace(s: &str) -> Option<(&str, &str)> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut prev = '\0';
+    for (i, ch) in s.char_indices() {
+        if ch == '\'' && !in_double && prev != '\\' {
+            in_single = !in_single;
+        } else if ch == '"' && !in_single && prev != '\\' {
+            in_double = !in_double;
+        } else if ch.is_whitespace() && !in_single && !in_double {
+            let key = &s[..i];
+            let value = s[i..].trim_start();
+            if !key.is_empty() && !value.is_empty() {
+                return Some((key, value));
+            }
+            return None;
+        }
+        prev = ch;
+    }
+    None
+}
+
+fn normalize_nexus_token(token: &str) -> String {
+    let token = token.trim();
+    if token.len() >= 2
+        && ((token.starts_with('\'') && token.ends_with('\''))
+            || (token.starts_with('"') && token.ends_with('"')))
+    {
+        let inner = &token[1..token.len() - 1];
+        if token.starts_with('\'') {
+            return inner.replace("''", "'");
+        }
+        return inner.replace("\"\"", "\"");
+    }
+    token.to_string()
+}
+
 fn statement_complete(s: &str) -> bool {
     first_statement_semicolon(s).is_some()
 }
@@ -722,5 +841,28 @@ END;";
         assert_eq!(trees.len(), 1);
         assert_eq!(trees[0].label.as_deref(), Some("tree_1"));
         assert_eq!(trees[0].leaf_count(), 3);
+    }
+
+    #[test]
+    fn parses_nexus_with_translate_map() {
+        let input = "#NEXUS
+BEGIN TREES;
+    Translate
+        1 Alpha_taxon,
+        2 'Beta taxon';
+    TREE tree1 = [&R] (1:0.1,2:0.2);
+END;";
+        let trees = parse_nexus(input).unwrap();
+        assert_eq!(trees.len(), 1);
+
+        let mut leaf_names: Vec<String> = trees[0]
+            .nodes
+            .iter()
+            .filter(|n| n.is_leaf())
+            .filter_map(|n| n.name.clone())
+            .collect();
+        leaf_names.sort();
+
+        assert_eq!(leaf_names, vec!["Alpha_taxon".to_string(), "Beta taxon".to_string()]);
     }
 }
