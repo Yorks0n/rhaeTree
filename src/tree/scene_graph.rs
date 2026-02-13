@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
 use crate::tree::layout::{RectSegmentKind, TreeLayout, TreeLayoutType};
-use crate::tree::painter::{HighlightShape, ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelHit, TreePainter};
+use crate::tree::painter::{
+    HighlightShape, ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelHit, TreePainter,
+};
 use crate::tree::viewer::SelectionMode;
 use crate::tree::{NodeId, Tree, TreeNode};
 
@@ -70,6 +72,28 @@ pub struct TreeSceneGraph {
     pub tip_label_hits: Vec<TipLabelHit>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneLayer {
+    Full,
+    Base,
+    Decor,
+    Interaction,
+}
+
+impl SceneLayer {
+    fn include_base(self) -> bool {
+        matches!(self, Self::Full | Self::Base)
+    }
+
+    fn include_decor(self) -> bool {
+        matches!(self, Self::Full | Self::Decor)
+    }
+
+    fn include_interaction(self) -> bool {
+        matches!(self, Self::Full | Self::Interaction)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_tree_scene(
     tree: &Tree,
@@ -82,68 +106,76 @@ pub fn build_tree_scene(
     transform_inner: Rect,
     stroke_scale: f32,
     selection_mode: Option<SelectionMode>,
+    layer: SceneLayer,
 ) -> TreeSceneGraph {
     let to_screen = painter.create_to_screen_transform(tree, layout, transform_inner);
     let to_local = |p: Pos2| Pos2::new(p.x - rect.left(), p.y - rect.top());
     let mut primitives = Vec::new();
+    let include_base = layer.include_base();
+    let include_decor = layer.include_decor();
+    let include_interaction = layer.include_interaction();
 
-    primitives.push(ScenePrimitive::FillRect {
-        rect: Rect::from_min_size(Pos2::ZERO, rect.size()),
-        color: painter.background_color,
-    });
-    primitives.push(ScenePrimitive::FillRect {
-        rect: Rect::from_min_max(to_local(canvas_inner.min), to_local(canvas_inner.max)),
-        color: painter.canvas_color,
-    });
+    if include_base {
+        primitives.push(ScenePrimitive::FillRect {
+            rect: Rect::from_min_size(Pos2::ZERO, rect.size()),
+            color: painter.background_color,
+        });
+        primitives.push(ScenePrimitive::FillRect {
+            rect: Rect::from_min_max(to_local(canvas_inner.min), to_local(canvas_inner.max)),
+            color: painter.canvas_color,
+        });
+    }
 
-    for shape in painter.compute_highlight_shapes(tree, layout) {
-        match shape {
-            HighlightShape::Rect {
-                top_left,
-                bottom_right,
-                color,
-            } => {
-                let a = to_local(to_screen((top_left.x, top_left.y)));
-                let b = to_local(to_screen((bottom_right.x, bottom_right.y)));
-                primitives.push(ScenePrimitive::FillRect {
-                    rect: Rect::from_two_pos(a, b),
+    if include_interaction {
+        for shape in painter.compute_highlight_shapes(tree, layout) {
+            match shape {
+                HighlightShape::Rect {
+                    top_left,
+                    bottom_right,
                     color,
-                });
-            }
-            HighlightShape::Polygon { points, color } => {
-                let mapped: Vec<Pos2> = points
-                    .into_iter()
-                    .map(|p| to_local(to_screen((p.x, p.y))))
-                    .collect();
-                primitives.push(ScenePrimitive::FillPolygon {
-                    points: mapped,
-                    color,
-                });
-            }
-            HighlightShape::Sector {
-                center,
-                inner_radius,
-                outer_radius,
-                start_angle,
-                end_angle,
-                color,
-            } => {
-                let center_w = (center.x, center.y);
-                let c = to_local(to_screen(center_w));
-                // Radii are in layout space; convert to current screen space so
-                // circular highlights match tree geometry after zoom/fit transforms.
-                let inner_r = (to_local(to_screen((center_w.0 + inner_radius, center_w.1))) - c)
-                    .length();
-                let outer_r = (to_local(to_screen((center_w.0 + outer_radius, center_w.1))) - c)
-                    .length();
-                primitives.push(ScenePrimitive::FillSector {
-                    center: c,
-                    inner_radius: inner_r,
-                    outer_radius: outer_r,
+                } => {
+                    let a = to_local(to_screen((top_left.x, top_left.y)));
+                    let b = to_local(to_screen((bottom_right.x, bottom_right.y)));
+                    primitives.push(ScenePrimitive::FillRect {
+                        rect: Rect::from_two_pos(a, b),
+                        color,
+                    });
+                }
+                HighlightShape::Polygon { points, color } => {
+                    let mapped: Vec<Pos2> = points
+                        .into_iter()
+                        .map(|p| to_local(to_screen((p.x, p.y))))
+                        .collect();
+                    primitives.push(ScenePrimitive::FillPolygon {
+                        points: mapped,
+                        color,
+                    });
+                }
+                HighlightShape::Sector {
+                    center,
+                    inner_radius,
+                    outer_radius,
                     start_angle,
                     end_angle,
                     color,
-                });
+                } => {
+                    let center_w = (center.x, center.y);
+                    let c = to_local(to_screen(center_w));
+                    // Radii are in layout space; convert to current screen space so
+                    // circular highlights match tree geometry after zoom/fit transforms.
+                    let inner_r =
+                        (to_local(to_screen((center_w.0 + inner_radius, center_w.1))) - c).length();
+                    let outer_r =
+                        (to_local(to_screen((center_w.0 + outer_radius, center_w.1))) - c).length();
+                    primitives.push(ScenePrimitive::FillSector {
+                        center: c,
+                        inner_radius: inner_r,
+                        outer_radius: outer_r,
+                        start_angle,
+                        end_angle,
+                        color,
+                    });
+                }
             }
         }
     }
@@ -151,7 +183,8 @@ pub fn build_tree_scene(
     let branch_color = painter.branch_stroke.color;
     let selected_branch_color = painter.tip_selection_color;
     let branch_width = (painter.branch_stroke.width * stroke_scale).max(1.0);
-    let highlight_width = (painter.branch_highlight_stroke.width * stroke_scale).max(branch_width * 1.8);
+    let highlight_width =
+        (painter.branch_highlight_stroke.width * stroke_scale).max(branch_width * 1.8);
 
     if matches!(layout.layout_type, TreeLayoutType::Circular) && !layout.arc_segments.is_empty() {
         for (parent, child) in &layout.edges {
@@ -165,7 +198,7 @@ pub fn build_tree_scene(
                 .iter()
                 .find(|a| a.child == *child && a.parent == *parent)
             {
-                if is_selected {
+                if include_interaction && is_selected {
                     primitives.push(ScenePrimitive::StrokeCircularBranch {
                         child: to_local(to_screen(layout.positions[*child])),
                         center: to_local(to_screen(arc.center)),
@@ -181,22 +214,24 @@ pub fn build_tree_scene(
                         },
                     });
                 }
-                primitives.push(ScenePrimitive::StrokeCircularBranch {
-                    child: to_local(to_screen(layout.positions[*child])),
-                    center: to_local(to_screen(arc.center)),
-                    radius: (to_local(to_screen((arc.center.0 + arc.radius, arc.center.1)))
-                        - to_local(to_screen(arc.center)))
-                    .length(),
-                    start_angle: arc.start_angle,
-                    end_angle: arc.end_angle,
-                    style: StrokeStyle {
-                        width: branch_width,
-                        color: base_color,
-                        dash: None,
-                    },
-                });
+                if include_base {
+                    primitives.push(ScenePrimitive::StrokeCircularBranch {
+                        child: to_local(to_screen(layout.positions[*child])),
+                        center: to_local(to_screen(arc.center)),
+                        radius: (to_local(to_screen((arc.center.0 + arc.radius, arc.center.1)))
+                            - to_local(to_screen(arc.center)))
+                        .length(),
+                        start_angle: arc.start_angle,
+                        end_angle: arc.end_angle,
+                        style: StrokeStyle {
+                            width: branch_width,
+                            color: base_color,
+                            dash: None,
+                        },
+                    });
+                }
             } else {
-                if is_selected {
+                if include_interaction && is_selected {
                     primitives.push(ScenePrimitive::StrokeLine {
                         from: to_local(to_screen(layout.positions[*parent])),
                         to: to_local(to_screen(layout.positions[*child])),
@@ -207,15 +242,17 @@ pub fn build_tree_scene(
                         },
                     });
                 }
-                primitives.push(ScenePrimitive::StrokeLine {
-                    from: to_local(to_screen(layout.positions[*parent])),
-                    to: to_local(to_screen(layout.positions[*child])),
-                    style: StrokeStyle {
-                        width: branch_width,
-                        color: base_color,
-                        dash: None,
-                    },
-                });
+                if include_base {
+                    primitives.push(ScenePrimitive::StrokeLine {
+                        from: to_local(to_screen(layout.positions[*parent])),
+                        to: to_local(to_screen(layout.positions[*child])),
+                        style: StrokeStyle {
+                            width: branch_width,
+                            color: base_color,
+                            dash: None,
+                        },
+                    });
+                }
             }
         }
     } else if !layout.continuous_branches.is_empty() {
@@ -230,7 +267,7 @@ pub fn build_tree_scene(
                 .iter()
                 .map(|&p| to_local(to_screen(p)))
                 .collect();
-            if is_selected {
+            if include_interaction && is_selected {
                 primitives.push(ScenePrimitive::StrokePolyline {
                     points: points.clone(),
                     style: StrokeStyle {
@@ -240,14 +277,16 @@ pub fn build_tree_scene(
                     },
                 });
             }
-            primitives.push(ScenePrimitive::StrokePolyline {
-                points,
-                style: StrokeStyle {
-                    width: branch_width,
-                    color: base_color,
-                    dash: None,
-                },
-            });
+            if include_base {
+                primitives.push(ScenePrimitive::StrokePolyline {
+                    points,
+                    style: StrokeStyle {
+                        width: branch_width,
+                        color: base_color,
+                        dash: None,
+                    },
+                });
+            }
         }
     } else {
         for (parent, child) in &layout.edges {
@@ -256,7 +295,7 @@ pub fn build_tree_scene(
             let base_color = painter
                 .branch_color_override(*child)
                 .unwrap_or(branch_color);
-            if is_selected {
+            if include_interaction && is_selected {
                 primitives.push(ScenePrimitive::StrokeLine {
                     from: to_local(to_screen(layout.positions[*parent])),
                     to: to_local(to_screen(layout.positions[*child])),
@@ -267,19 +306,21 @@ pub fn build_tree_scene(
                     },
                 });
             }
-            primitives.push(ScenePrimitive::StrokeLine {
-                from: to_local(to_screen(layout.positions[*parent])),
-                to: to_local(to_screen(layout.positions[*child])),
-                style: StrokeStyle {
-                    width: branch_width,
-                    color: base_color,
-                    dash: None,
-                },
-            });
+            if include_base {
+                primitives.push(ScenePrimitive::StrokeLine {
+                    from: to_local(to_screen(layout.positions[*parent])),
+                    to: to_local(to_screen(layout.positions[*child])),
+                    style: StrokeStyle {
+                        width: branch_width,
+                        color: base_color,
+                        dash: None,
+                    },
+                });
+            }
         }
     }
 
-    if painter.show_node_bars {
+    if include_decor && painter.show_node_bars {
         if let Some(field) = painter.node_bar_field() {
             match layout.layout_type {
                 TreeLayoutType::Rectangular
@@ -348,10 +389,9 @@ pub fn build_tree_scene(
                         let ux = dir_x / norm;
                         let uy = dir_y / norm;
 
-                        let node_radius =
-                            ((node_pos.0 - center_world.0).powi(2)
-                                + (node_pos.1 - center_world.1).powi(2))
-                            .sqrt();
+                        let node_radius = ((node_pos.0 - center_world.0).powi(2)
+                            + (node_pos.1 - center_world.1).powi(2))
+                        .sqrt();
                         let half_width = ((max - min).abs() as f32) * 0.5;
                         let r0 = (node_radius - half_width).max(0.0);
                         let r1 = (node_radius + half_width).max(0.0);
@@ -385,43 +425,42 @@ pub fn build_tree_scene(
     } else {
         HashMap::new()
     };
-    let circular_tip_align_data = if painter.align_tip_labels
-        && matches!(layout.layout_type, TreeLayoutType::Circular)
-    {
-        let center_world = layout
-            .arc_segments
-            .first()
-            .map(|arc| arc.center)
-            .or_else(|| tree.root.map(|root| layout.positions[root]))
-            .unwrap_or((layout.width * 0.5, layout.height * 0.5));
-        let center = to_local(to_screen(center_world));
-        let mut radii = Vec::new();
-        let mut max_radius = 0.0f32;
-        for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
-            let p = to_local(to_screen(layout.positions[node.id]));
-            let v = p - center;
-            let r = v.length();
-            max_radius = max_radius.max(r);
-            let dir = if r > 1e-6 {
-                v / r
-            } else {
-                let angle = compute_circular_tip_angle_screen(tree, layout, node, &to_screen);
-                Vec2::new(angle.cos(), angle.sin())
-            };
-            radii.push((node.id, r, dir));
-        }
-        let mut data = HashMap::new();
-        for (node_id, r, dir) in radii {
-            let ext = (max_radius - r).max(0.0);
-            if ext > 0.5 {
-                data.insert(node_id, (ext, dir));
+    let circular_tip_align_data =
+        if painter.align_tip_labels && matches!(layout.layout_type, TreeLayoutType::Circular) {
+            let center_world = layout
+                .arc_segments
+                .first()
+                .map(|arc| arc.center)
+                .or_else(|| tree.root.map(|root| layout.positions[root]))
+                .unwrap_or((layout.width * 0.5, layout.height * 0.5));
+            let center = to_local(to_screen(center_world));
+            let mut radii = Vec::new();
+            let mut max_radius = 0.0f32;
+            for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
+                let p = to_local(to_screen(layout.positions[node.id]));
+                let v = p - center;
+                let r = v.length();
+                max_radius = max_radius.max(r);
+                let dir = if r > 1e-6 {
+                    v / r
+                } else {
+                    let angle = compute_circular_tip_angle_screen(tree, layout, node, &to_screen);
+                    Vec2::new(angle.cos(), angle.sin())
+                };
+                radii.push((node.id, r, dir));
             }
-        }
-        data
-    } else {
-        HashMap::new()
-    };
-    if painter.align_tip_labels && !tip_extensions.is_empty() {
+            let mut data = HashMap::new();
+            for (node_id, r, dir) in radii {
+                let ext = (max_radius - r).max(0.0);
+                if ext > 0.5 {
+                    data.insert(node_id, (ext, dir));
+                }
+            }
+            data
+        } else {
+            HashMap::new()
+        };
+    if include_decor && painter.align_tip_labels && !tip_extensions.is_empty() {
         for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
             if let Some(&ext) = tip_extensions.get(&node.id) {
                 let start_w = layout.positions[node.id];
@@ -444,7 +483,8 @@ pub fn build_tree_scene(
             }
         }
     }
-    if painter.align_tip_labels
+    if include_decor
+        && painter.align_tip_labels
         && matches!(layout.layout_type, TreeLayoutType::Circular)
         && !circular_tip_align_data.is_empty()
     {
@@ -495,7 +535,10 @@ pub fn build_tree_scene(
         .iter()
         .filter_map(|branch| {
             if branch.points.len() >= 2 {
-                Some((branch.child, (branch.points[0], *branch.points.last().unwrap())))
+                Some((
+                    branch.child,
+                    (branch.points[0], *branch.points.last().unwrap()),
+                ))
             } else {
                 None
             }
@@ -526,8 +569,10 @@ pub fn build_tree_scene(
         })
         .collect();
     let node_heights = if painter.show_node_labels
-        && matches!(painter.node_label_display, crate::tree::painter::NodeLabelDisplay::NodeHeight)
-    {
+        && matches!(
+            painter.node_label_display,
+            crate::tree::painter::NodeLabelDisplay::NodeHeight
+        ) {
         Some(painter.compute_node_heights(tree))
     } else {
         None
@@ -561,14 +606,14 @@ pub fn build_tree_scene(
             match painter.tip_shape_color_mode {
                 ShapeColorMode::Fixed => painter.tip_shape_fixed_color,
                 ShapeColorMode::UserSelection => painter
-                    .tip_label_color_override(node.id)
+                    .tip_shape_color_override(node.id)
                     .unwrap_or(base_fill),
             }
         } else {
             match painter.node_shape_color_mode {
                 ShapeColorMode::Fixed => painter.node_shape_fixed_color,
                 ShapeColorMode::UserSelection => painter
-                    .branch_color_override(node.id)
+                    .node_shape_color_override(node.id)
                     .unwrap_or(base_fill),
             }
         };
@@ -583,10 +628,18 @@ pub fn build_tree_scene(
                 tree,
                 node.id,
                 is_tip,
-                if is_tip { tip_value_range } else { node_value_range },
+                if is_tip {
+                    tip_value_range
+                } else {
+                    node_value_range
+                },
             );
-            let shape = if is_tip { painter.tip_shape } else { painter.node_shape };
-            if is_selected {
+            let shape = if is_tip {
+                painter.tip_shape
+            } else {
+                painter.node_shape
+            };
+            if include_interaction && is_selected {
                 let highlight_radius = (radius + 2.0).max(radius * 1.8);
                 push_shape_primitive(
                     &mut primitives,
@@ -596,7 +649,9 @@ pub fn build_tree_scene(
                     shape,
                 );
             }
-            push_shape_primitive(&mut primitives, p, radius, fill, shape);
+            if include_decor {
+                push_shape_primitive(&mut primitives, p, radius, fill, shape);
+            }
         }
 
         if node.is_leaf() && painter.show_tip_labels {
@@ -610,10 +665,12 @@ pub fn build_tree_scene(
                         | TreeLayoutType::Radial
                         | TreeLayoutType::Daylight => {
                             let base_angle = match layout.layout_type {
-                                TreeLayoutType::Circular => {
-                                    compute_circular_tip_angle_screen(tree, layout, node, &to_screen)
+                                TreeLayoutType::Circular => compute_circular_tip_angle_screen(
+                                    tree, layout, node, &to_screen,
+                                ),
+                                _ => {
+                                    compute_radial_tip_angle_screen(tree, layout, node, &to_screen)
                                 }
-                                _ => compute_radial_tip_angle_screen(tree, layout, node, &to_screen),
                             };
                             let offset = if matches!(layout.layout_type, TreeLayoutType::Circular) {
                                 12.0
@@ -634,7 +691,9 @@ pub fn build_tree_scene(
                                 circular_tip_align_data
                                     .get(&node.id)
                                     .map(|(_, d)| *d)
-                                    .unwrap_or_else(|| Vec2::new(base_angle.cos(), base_angle.sin()))
+                                    .unwrap_or_else(|| {
+                                        Vec2::new(base_angle.cos(), base_angle.sin())
+                                    })
                             } else {
                                 Vec2::new(base_angle.cos(), base_angle.sin())
                             };
@@ -643,7 +702,7 @@ pub fn build_tree_scene(
                             let text_size = approx_text_size(&text, painter.tip_label_font_size);
                             let hit_rect =
                                 rotated_text_bounds(anchor_pos, text_size, rotation, align);
-                            if selected_tips.contains(&node.id) {
+                            if include_interaction && selected_tips.contains(&node.id) {
                                 primitives.push(ScenePrimitive::FillPolygon {
                                     points: rotated_expanded_corners(
                                         anchor_pos, text_size, rotation, align, 2.0,
@@ -651,22 +710,24 @@ pub fn build_tree_scene(
                                     color: painter.tip_selection_color,
                                 });
                             }
-                            tip_label_hits.push(TipLabelHit {
-                                node_id: node.id,
-                                rect: hit_rect,
-                                rotation_angle: rotation,
-                                anchor: align,
-                                anchor_pos,
-                                text_size,
-                            });
-                            primitives.push(ScenePrimitive::Text {
-                                text,
-                                anchor: anchor_pos,
-                                angle: rotation,
-                                align,
-                                size: painter.tip_label_font_size,
-                                color,
-                            });
+                            if include_decor {
+                                tip_label_hits.push(TipLabelHit {
+                                    node_id: node.id,
+                                    rect: hit_rect,
+                                    rotation_angle: rotation,
+                                    anchor: align,
+                                    anchor_pos,
+                                    text_size,
+                                });
+                                primitives.push(ScenePrimitive::Text {
+                                    text,
+                                    anchor: anchor_pos,
+                                    angle: rotation,
+                                    align,
+                                    size: painter.tip_label_font_size,
+                                    color,
+                                });
+                            }
                         }
                         _ => {
                             let anchor_pos = Pos2::new(p.x + 8.0, p.y);
@@ -675,33 +736,35 @@ pub fn build_tree_scene(
                                 Pos2::new(anchor_pos.x, anchor_pos.y - text_size.y * 0.5),
                                 text_size,
                             );
-                            if selected_tips.contains(&node.id) {
+                            if include_interaction && selected_tips.contains(&node.id) {
                                 primitives.push(ScenePrimitive::FillRect {
                                     rect: hit_rect.expand(2.0),
                                     color: painter.tip_selection_color,
                                 });
                             }
-                            tip_label_hits.push(TipLabelHit {
-                                node_id: node.id,
-                                rect: hit_rect,
-                                rotation_angle: 0.0,
-                                anchor: egui::Align2::LEFT_CENTER,
-                                anchor_pos,
-                                text_size,
-                            });
-                            primitives.push(ScenePrimitive::Text {
-                                text,
-                                anchor: anchor_pos,
-                                angle: 0.0,
-                                align: egui::Align2::LEFT_CENTER,
-                                size: painter.tip_label_font_size,
-                                color,
-                            });
+                            if include_decor {
+                                tip_label_hits.push(TipLabelHit {
+                                    node_id: node.id,
+                                    rect: hit_rect,
+                                    rotation_angle: 0.0,
+                                    anchor: egui::Align2::LEFT_CENTER,
+                                    anchor_pos,
+                                    text_size,
+                                });
+                                primitives.push(ScenePrimitive::Text {
+                                    text,
+                                    anchor: anchor_pos,
+                                    angle: 0.0,
+                                    align: egui::Align2::LEFT_CENTER,
+                                    size: painter.tip_label_font_size,
+                                    color,
+                                });
+                            }
                         }
                     }
                 }
             }
-        } else if painter.show_node_labels {
+        } else if include_decor && painter.show_node_labels {
             if let Some(name) = painter.node_label_text(tree, node, node_heights.as_ref()) {
                 let (anchor, angle, align) = match layout.layout_type {
                     TreeLayoutType::Rectangular => {
@@ -767,7 +830,7 @@ pub fn build_tree_scene(
             }
         }
 
-        if painter.show_branch_labels {
+        if include_decor && painter.show_branch_labels {
             if let Some(parent_id) = node.parent {
                 if let Some(text) = painter.branch_label_text(node) {
                     match layout.layout_type {
@@ -775,13 +838,17 @@ pub fn build_tree_scene(
                             if let Some((cx, cy, radius, start_angle, _end_angle)) =
                                 circular_arc_by_child.get(&node.id).copied()
                             {
-                                let shoulder =
-                                    Pos2::new(cx + radius * start_angle.cos(), cy + radius * start_angle.sin());
+                                let shoulder = Pos2::new(
+                                    cx + radius * start_angle.cos(),
+                                    cy + radius * start_angle.sin(),
+                                );
                                 let shoulder_s = to_local(to_screen((shoulder.x, shoulder.y)));
                                 let child_s = p;
                                 let ray = child_s - shoulder_s;
-                                let mut anchor =
-                                    Pos2::new((shoulder_s.x + child_s.x) * 0.5, (shoulder_s.y + child_s.y) * 0.5);
+                                let mut anchor = Pos2::new(
+                                    (shoulder_s.x + child_s.x) * 0.5,
+                                    (shoulder_s.y + child_s.y) * 0.5,
+                                );
                                 if let Some(offset) = upward_perpendicular_offset(ray, 8.0) {
                                     anchor += offset;
                                 }
@@ -813,10 +880,9 @@ pub fn build_tree_scene(
                             }
                         }
                         TreeLayoutType::Radial => {
-                            let (a_w, b_w) = branch_span_segments
-                                .get(&node.id)
-                                .copied()
-                                .unwrap_or((layout.positions[parent_id], layout.positions[node.id]));
+                            let (a_w, b_w) = branch_span_segments.get(&node.id).copied().unwrap_or(
+                                (layout.positions[parent_id], layout.positions[node.id]),
+                            );
                             let a = to_local(to_screen(a_w));
                             let b = to_local(to_screen(b_w));
                             let dir = b - a;
@@ -838,7 +904,10 @@ pub fn build_tree_scene(
                             let (a_w, b_w) = rectangular_horizontal_by_child
                                 .get(&node.id)
                                 .copied()
-                                .unwrap_or((layout.positions[parent_id], layout.positions[node.id]));
+                                .unwrap_or((
+                                    layout.positions[parent_id],
+                                    layout.positions[node.id],
+                                ));
                             let a = to_local(to_screen(a_w));
                             let b = to_local(to_screen(b_w));
                             primitives.push(ScenePrimitive::Text {
@@ -854,10 +923,11 @@ pub fn build_tree_scene(
                         | TreeLayoutType::Phylogram
                         | TreeLayoutType::Cladogram
                         | TreeLayoutType::Slanted => {
-                            let (a_w, b_w) = branch_terminal_segments
-                                .get(&node.id)
-                                .copied()
-                                .unwrap_or((layout.positions[parent_id], layout.positions[node.id]));
+                            let (a_w, b_w) =
+                                branch_terminal_segments.get(&node.id).copied().unwrap_or((
+                                    layout.positions[parent_id],
+                                    layout.positions[node.id],
+                                ));
                             let a = to_local(to_screen(a_w));
                             let b = to_local(to_screen(b_w));
                             let anchor = Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5 - 8.0);
@@ -878,7 +948,7 @@ pub fn build_tree_scene(
         }
     }
 
-    if painter.show_scale_bar && layout.width > f32::EPSILON {
+    if include_decor && painter.show_scale_bar && layout.width > f32::EPSILON {
         let tick = painter.scale_bar_range.max(1e-6);
         let scale_x = if layout.width <= f32::EPSILON {
             1.0
@@ -972,7 +1042,12 @@ fn angle_if_non_degenerate(dx: f32, dy: f32) -> Option<f32> {
     }
 }
 
-fn sibling_fanout_angle(tree: &Tree, parent_id: NodeId, node_id: NodeId, base_angle: f32) -> Option<f32> {
+fn sibling_fanout_angle(
+    tree: &Tree,
+    parent_id: NodeId,
+    node_id: NodeId,
+    base_angle: f32,
+) -> Option<f32> {
     let siblings = &tree.nodes[parent_id].children;
     if siblings.len() <= 1 {
         return None;
@@ -980,7 +1055,11 @@ fn sibling_fanout_angle(tree: &Tree, parent_id: NodeId, node_id: NodeId, base_an
     let idx = siblings.iter().position(|&id| id == node_id)? as f32;
     let n = siblings.len() as f32;
     let spread_total = ((20.0f32).to_radians() * (n - 1.0)).min((120.0f32).to_radians());
-    let step = if n > 1.0 { spread_total / (n - 1.0) } else { 0.0 };
+    let step = if n > 1.0 {
+        spread_total / (n - 1.0)
+    } else {
+        0.0
+    };
     let offset = -0.5 * spread_total + idx * step;
     Some(base_angle + offset)
 }
@@ -1026,7 +1105,8 @@ where
                 let mut anc = tree.nodes[parent_id].parent;
                 while let Some(anc_id) = anc {
                     let anc_p = to_screen(layout.positions[anc_id]);
-                    if let Some(a) = angle_if_non_degenerate(parent.x - anc_p.x, parent.y - anc_p.y) {
+                    if let Some(a) = angle_if_non_degenerate(parent.x - anc_p.x, parent.y - anc_p.y)
+                    {
                         return Some(a);
                     }
                     anc = tree.nodes[anc_id].parent;
@@ -1084,7 +1164,8 @@ where
                 let mut anc = tree.nodes[parent_id].parent;
                 while let Some(anc_id) = anc {
                     let anc_p = to_screen(layout.positions[anc_id]);
-                    if let Some(a) = angle_if_non_degenerate(parent.x - anc_p.x, parent.y - anc_p.y) {
+                    if let Some(a) = angle_if_non_degenerate(parent.x - anc_p.x, parent.y - anc_p.y)
+                    {
                         return Some(a);
                     }
                     anc = tree.nodes[anc_id].parent;

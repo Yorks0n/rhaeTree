@@ -222,8 +222,7 @@ fn parse_rtr_settings_block(raw: &str) -> BTreeMap<String, String> {
         }
 
         let upper = trimmed.to_ascii_uppercase();
-        if upper.starts_with("BEGIN RHAETREE")
-        {
+        if upper.starts_with("BEGIN RHAETREE") {
             in_block = true;
             continue;
         }
@@ -255,11 +254,7 @@ fn parse_rtr_settings_block(raw: &str) -> BTreeMap<String, String> {
     settings
 }
 
-pub fn save_rtr(
-    path: &Path,
-    trees: &[Tree],
-    settings: &BTreeMap<String, String>,
-) -> Result<()> {
+pub fn save_rtr(path: &Path, trees: &[Tree], settings: &BTreeMap<String, String>) -> Result<()> {
     if trees.is_empty() {
         bail!("no trees to export");
     }
@@ -824,7 +819,10 @@ BEGIN RHAETREE;
 END;";
         let (trees, metadata) = parse_rtr(input).unwrap();
         assert_eq!(trees.len(), 1);
-        assert_eq!(metadata.get("layout.type").map(String::as_str), Some("radial"));
+        assert_eq!(
+            metadata.get("layout.type").map(String::as_str),
+            Some("radial")
+        );
         assert_eq!(
             metadata.get("painter.branchLineWidth").map(String::as_str),
             Some("2.5")
@@ -863,6 +861,9 @@ END;";
             .collect();
         leaf_names.sort();
 
-        assert_eq!(leaf_names, vec!["Alpha_taxon".to_string(), "Beta taxon".to_string()]);
+        assert_eq!(
+            leaf_names,
+            vec!["Alpha_taxon".to_string(), "Beta taxon".to_string()]
+        );
     }
 }

@@ -684,5 +684,4 @@ impl TreeViewer {
             self.unordered_trees[self.current_tree_index] = None;
         }
     }
-
 }

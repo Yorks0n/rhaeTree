@@ -183,6 +183,8 @@ pub struct TreePainter {
     pub tip_selection_color: Color32,
     branch_color_overrides: HashMap<NodeId, Color32>,
     tip_label_color_overrides: HashMap<NodeId, Color32>,
+    tip_shape_color_overrides: HashMap<NodeId, Color32>,
+    node_shape_color_overrides: HashMap<NodeId, Color32>,
     highlighted_clades: HashMap<NodeId, Color32>,
 }
 
@@ -245,6 +247,8 @@ impl Default for TreePainter {
             tip_selection_color: Color32::from_rgba_unmultiplied(120, 170, 255, 150),
             branch_color_overrides: HashMap::new(),
             tip_label_color_overrides: HashMap::new(),
+            tip_shape_color_overrides: HashMap::new(),
+            node_shape_color_overrides: HashMap::new(),
             highlighted_clades: HashMap::new(),
         }
     }
@@ -434,9 +438,35 @@ impl TreePainter {
         &self.tip_label_color_overrides
     }
 
+    pub fn set_tip_shape_color(&mut self, node_id: NodeId, color: Color32) {
+        self.tip_shape_color_overrides.insert(node_id, color);
+    }
+
+    pub fn tip_shape_color_override(&self, node_id: NodeId) -> Option<Color32> {
+        self.tip_shape_color_overrides.get(&node_id).copied()
+    }
+
+    pub fn tip_shape_color_overrides(&self) -> &HashMap<NodeId, Color32> {
+        &self.tip_shape_color_overrides
+    }
+
+    pub fn set_node_shape_color(&mut self, node_id: NodeId, color: Color32) {
+        self.node_shape_color_overrides.insert(node_id, color);
+    }
+
+    pub fn node_shape_color_override(&self, node_id: NodeId) -> Option<Color32> {
+        self.node_shape_color_overrides.get(&node_id).copied()
+    }
+
+    pub fn node_shape_color_overrides(&self) -> &HashMap<NodeId, Color32> {
+        &self.node_shape_color_overrides
+    }
+
     pub fn clear_color_overrides(&mut self) {
         self.branch_color_overrides.clear();
         self.tip_label_color_overrides.clear();
+        self.tip_shape_color_overrides.clear();
+        self.node_shape_color_overrides.clear();
     }
 
     pub fn add_highlighted_clade(&mut self, node_id: NodeId, color: Color32) {
@@ -852,10 +882,16 @@ impl TreePainter {
             NodeLabelDisplay::Attribute => {
                 let key = self.node_label_attribute.as_deref()?;
                 if let Some((min, max)) = node.numeric_range_attribute(key) {
-                    let min_text =
-                        Self::format_numeric_with(min, self.node_label_format, self.node_label_precision);
-                    let max_text =
-                        Self::format_numeric_with(max, self.node_label_format, self.node_label_precision);
+                    let min_text = Self::format_numeric_with(
+                        min,
+                        self.node_label_format,
+                        self.node_label_precision,
+                    );
+                    let max_text = Self::format_numeric_with(
+                        max,
+                        self.node_label_format,
+                        self.node_label_precision,
+                    );
                     if (max - min).abs() <= f64::EPSILON {
                         Some(min_text)
                     } else {
@@ -918,17 +954,15 @@ impl TreePainter {
             }
             node.children
                 .iter()
-                .map(|&child_id| tree.nodes[child_id].length.unwrap_or(1.0) + dist_to_tip(tree, child_id))
+                .map(|&child_id| {
+                    tree.nodes[child_id].length.unwrap_or(1.0) + dist_to_tip(tree, child_id)
+                })
                 .fold(0.0f64, |a, b| a.max(b))
         }
         dist_to_tip(tree, node_id)
     }
 
-    fn format_numeric_with(
-        value: f64,
-        format: TipLabelNumberFormat,
-        precision: usize,
-    ) -> String {
+    fn format_numeric_with(value: f64, format: TipLabelNumberFormat, precision: usize) -> String {
         match format {
             TipLabelNumberFormat::Decimal => {
                 format!("{value:.precision$}")
@@ -1255,7 +1289,10 @@ impl NodeLabelDisplay {
     }
 
     pub fn is_numeric(self) -> bool {
-        matches!(self, Self::BranchLength | Self::NodeHeight | Self::Attribute)
+        matches!(
+            self,
+            Self::BranchLength | Self::NodeHeight | Self::Attribute
+        )
     }
 }
 

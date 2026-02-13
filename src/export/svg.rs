@@ -8,7 +8,7 @@ use svg::Document;
 
 use crate::tree::layout::TreeLayout;
 use crate::tree::painter::TreePainter;
-use crate::tree::scene_graph::{build_tree_scene, ScenePrimitive, TreeSceneGraph};
+use crate::tree::scene_graph::{build_tree_scene, SceneLayer, ScenePrimitive, TreeSceneGraph};
 use crate::tree::Tree;
 
 pub fn export_svg(
@@ -54,6 +54,7 @@ pub(crate) fn build_export_scene(
         inner,
         1.0,
         None,
+        SceneLayer::Full,
     )
 }
 

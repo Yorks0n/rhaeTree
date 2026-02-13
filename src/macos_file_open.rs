@@ -8,7 +8,7 @@ mod imp {
     use objc2::runtime::ProtocolObject;
     use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
     use objc2_app_kit::{NSApplication, NSApplicationDelegate};
-    use objc2_foundation::{NSArray, MainThreadMarker, NSObject, NSObjectProtocol, NSURL};
+    use objc2_foundation::{MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSURL};
 
     static PENDING_PATHS: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
     thread_local! {

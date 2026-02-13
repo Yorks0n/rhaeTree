@@ -468,7 +468,11 @@ impl TreeLayout {
         let idx = siblings.iter().position(|&id| id == node_id)? as f32;
         let n = siblings.len() as f32;
         let spread_total = ((20.0f32).to_radians() * (n - 1.0)).min((120.0f32).to_radians());
-        let step = if n > 1.0 { spread_total / (n - 1.0) } else { 0.0 };
+        let step = if n > 1.0 {
+            spread_total / (n - 1.0)
+        } else {
+            0.0
+        };
         let offset = -0.5 * spread_total + idx * step;
         Some(base_angle + offset)
     }
@@ -524,7 +528,6 @@ impl TreeLayout {
             egui::pos2(pos.x + max_x, pos.y + max_y),
         )
     }
-
 }
 
 pub(super) fn normalize_positions(positions: &mut [(f32, f32)]) -> (f32, f32) {

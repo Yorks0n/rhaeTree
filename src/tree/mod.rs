@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use phylotree::tree::{Node as PhyloNode, Tree as PhyloTree};
 
+pub mod cairo_renderer;
 pub mod layout;
 pub mod painter;
 pub mod scene_graph;
-pub mod cairo_renderer;
 pub mod skia_renderer;
 pub mod vello_renderer;
 pub mod viewer;

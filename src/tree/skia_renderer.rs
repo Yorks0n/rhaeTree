@@ -12,7 +12,7 @@ use tiny_skia::{
 
 use crate::tree::layout::TreeLayout;
 use crate::tree::painter::{TipLabelHit, TreePainter};
-use crate::tree::scene_graph::{build_tree_scene, ScenePrimitive, TreeSceneGraph};
+use crate::tree::scene_graph::{build_tree_scene, SceneLayer, ScenePrimitive, TreeSceneGraph};
 use crate::tree::viewer::SelectionMode;
 use crate::tree::{NodeId, Tree};
 
@@ -51,6 +51,7 @@ impl SkiaTreeRenderer {
         transform_inner: Rect,
         stroke_scale: f32,
         selection_mode: Option<SelectionMode>,
+        scene_layer: SceneLayer,
         pixels_per_point: f32,
         resolution_scale: f32,
     ) -> Result<SkiaRenderOutput, String> {
@@ -65,6 +66,7 @@ impl SkiaTreeRenderer {
             transform_inner,
             stroke_scale,
             selection_mode,
+            scene_layer,
         );
         self.render_scene_to_image(&scene, pixels_per_point, resolution_scale)
     }

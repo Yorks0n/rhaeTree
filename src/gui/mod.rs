@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 use std::{
-    collections::{BTreeMap, HashSet},
     collections::hash_map::DefaultHasher,
+    collections::{BTreeMap, HashSet},
     hash::{Hash, Hasher},
 };
 
@@ -14,9 +14,10 @@ use rfd::FileDialog;
 use crate::app::{AppConfig, ExportFormat};
 use crate::io;
 use crate::tree::painter::{
-    BranchLabelDisplay, NodeLabelDisplay, ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelDisplay,
-    TipLabelFontFamily, TipLabelNumberFormat,
+    BranchLabelDisplay, NodeLabelDisplay, ShapeColorMode, ShapeSizeMode, ShapeType,
+    TipLabelDisplay, TipLabelFontFamily, TipLabelNumberFormat,
 };
+use crate::tree::scene_graph::SceneLayer;
 use crate::tree::skia_renderer::SkiaTreeRenderer;
 use crate::tree::vello_renderer::VelloTreeRenderer;
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
@@ -70,8 +71,12 @@ pub struct FigTreeGui {
     pending_export_path: Option<(PathBuf, crate::app::ExportFormat)>,
     rtr_save_path: Option<PathBuf>,
     tree_canvas_rect: Option<egui::Rect>,
-    tree_texture: Option<egui::TextureHandle>,
-    tree_render_signature: Option<u64>,
+    base_tree_texture: Option<egui::TextureHandle>,
+    decor_tree_texture: Option<egui::TextureHandle>,
+    interaction_tree_texture: Option<egui::TextureHandle>,
+    base_render_signature: Option<u64>,
+    decor_render_signature: Option<u64>,
+    interaction_render_signature: Option<u64>,
     cached_tip_label_hits_local: Vec<crate::tree::painter::TipLabelHit>,
     render_backend: RenderBackend,
     skia_renderer: SkiaTreeRenderer,
@@ -320,7 +325,13 @@ fn parse_hex_color_alpha(input: &str) -> Option<Color32> {
 }
 
 fn color_to_hex_rgba(color: Color32) -> String {
-    format!("#{:02X}{:02X}{:02X}{:02X}", color.r(), color.g(), color.b(), color.a())
+    format!(
+        "#{:02X}{:02X}{:02X}{:02X}",
+        color.r(),
+        color.g(),
+        color.b(),
+        color.a()
+    )
 }
 
 fn parse_bool(s: &str) -> Option<bool> {
@@ -645,8 +656,12 @@ impl FigTreeGui {
             pending_export_path: None,
             rtr_save_path: None,
             tree_canvas_rect: None,
-            tree_texture: None,
-            tree_render_signature: None,
+            base_tree_texture: None,
+            decor_tree_texture: None,
+            interaction_tree_texture: None,
+            base_render_signature: None,
+            decor_render_signature: None,
+            interaction_render_signature: None,
             cached_tip_label_hits_local: Vec::new(),
             render_backend: RenderBackend::Vello,
             skia_renderer: SkiaTreeRenderer::new(),
@@ -742,8 +757,17 @@ impl FigTreeGui {
         self.transform_branches_enabled = state.transform_branches_enabled;
         self.branch_transform = state.branch_transform;
 
-        self.tree_render_signature = None;
-        self.tree_texture = None;
+        self.invalidate_layer_caches();
+    }
+
+    fn invalidate_layer_caches(&mut self) {
+        self.base_render_signature = None;
+        self.decor_render_signature = None;
+        self.interaction_render_signature = None;
+        self.base_tree_texture = None;
+        self.decor_tree_texture = None;
+        self.interaction_tree_texture = None;
+        self.cached_tip_label_hits_local.clear();
     }
 
     fn record_undo_step(&mut self) {
@@ -912,15 +936,22 @@ impl FigTreeGui {
         colors.push(self.tree_painter.tip_shape_fixed_color);
         colors.push(self.tree_painter.node_shape_fixed_color);
         colors.push(self.tree_painter.node_bar_color());
+        colors.extend(self.tree_painter.branch_color_overrides().values().copied());
         colors.extend(
             self.tree_painter
-                .branch_color_overrides()
+                .tip_label_color_overrides()
                 .values()
                 .copied(),
         );
         colors.extend(
             self.tree_painter
-                .tip_label_color_overrides()
+                .tip_shape_color_overrides()
+                .values()
+                .copied(),
+        );
+        colors.extend(
+            self.tree_painter
+                .node_shape_color_overrides()
                 .values()
                 .copied(),
         );
@@ -960,7 +991,8 @@ impl FigTreeGui {
         target: ColorPickerTarget,
     ) {
         self.color_picker_color = initial;
-        self.color_picker_hex_input = format!("#{:02X}{:02X}{:02X}", initial.r(), initial.g(), initial.b());
+        self.color_picker_hex_input =
+            format!("#{:02X}{:02X}{:02X}", initial.r(), initial.g(), initial.b());
         self.color_picker_mode = ColorValueMode::Hex;
         self.color_picker_panel = ColorPanelMode::Custom;
         self.color_picker_target = target;
@@ -980,27 +1012,46 @@ impl FigTreeGui {
                 self.tree_painter.node_shape_fixed_color = color;
             }
             ColorPickerTarget::TipShapeSelection => self.apply_tip_shape_color_to_selection(color),
-            ColorPickerTarget::NodeShapeSelection => self.apply_node_shape_color_to_selection(color),
+            ColorPickerTarget::NodeShapeSelection => {
+                self.apply_node_shape_color_to_selection(color)
+            }
         }
     }
 
     fn tip_shape_selection_color(&self) -> Color32 {
-        if let Some(&tip_id) = self.tree_viewer.selected_tips().iter().next() {
+        if let Some(&tip_id) = self.selected_tip_nodes_for_shape_color().first() {
             return self
                 .tree_painter
-                .tip_label_color_override(tip_id)
+                .tip_shape_color_override(tip_id)
                 .unwrap_or(self.tree_painter.leaf_color);
         }
         self.tree_painter.leaf_color
     }
 
+    fn selected_tip_nodes_for_shape_color(&self) -> Vec<NodeId> {
+        let mut ids: HashSet<NodeId> = self.tree_viewer.selected_tips().iter().copied().collect();
+        if let Some(tree) = self.tree_viewer.current_tree() {
+            ids.extend(
+                self.tree_viewer
+                    .selected_nodes()
+                    .iter()
+                    .copied()
+                    .filter(|id| tree.nodes[*id].is_leaf()),
+            );
+        }
+        let mut tips: Vec<_> = ids.into_iter().collect();
+        tips.sort_unstable();
+        tips
+    }
+
     fn apply_tip_shape_color_to_selection(&mut self, color: Color32) {
-        if self.tree_viewer.selected_tips().is_empty() {
+        let selected_tips = self.selected_tip_nodes_for_shape_color();
+        if selected_tips.is_empty() {
             return;
         }
         self.record_undo_step();
-        for tip_id in self.tree_viewer.selected_tips() {
-            self.tree_painter.set_tip_label_color(*tip_id, color);
+        for tip_id in selected_tips {
+            self.tree_painter.set_tip_shape_color(tip_id, color);
         }
     }
 
@@ -1014,7 +1065,7 @@ impl FigTreeGui {
             {
                 return self
                     .tree_painter
-                    .branch_color_override(node_id)
+                    .node_shape_color_override(node_id)
                     .unwrap_or(self.tree_painter.internal_node_color);
             }
         }
@@ -1039,7 +1090,7 @@ impl FigTreeGui {
         }
         self.record_undo_step();
         for node_id in selected_internal_nodes {
-            self.tree_painter.set_branch_color(node_id, color);
+            self.tree_painter.set_node_shape_color(node_id, color);
         }
     }
 
@@ -1109,7 +1160,9 @@ impl FigTreeGui {
         if let Some(path) = FileDialog::new()
             .add_filter(
                 "Tree files",
-                &["tree", "tre", "trees", "nexus", "nex", "newick", "nwk", "rtr"],
+                &[
+                    "tree", "tre", "trees", "nexus", "nex", "newick", "nwk", "rtr",
+                ],
             )
             .pick_file()
         {
@@ -1221,8 +1274,14 @@ impl FigTreeGui {
     fn collect_rtr_settings(&self) -> BTreeMap<String, String> {
         let mut settings = BTreeMap::new();
 
-        settings.insert("layout.type".to_string(), layout_type_name(self.current_layout).to_string());
-        settings.insert("viewer.zoom".to_string(), format!("{:.6}", self.tree_viewer.zoom()));
+        settings.insert(
+            "layout.type".to_string(),
+            layout_type_name(self.current_layout).to_string(),
+        );
+        settings.insert(
+            "viewer.zoom".to_string(),
+            format!("{:.6}", self.tree_viewer.zoom()),
+        );
         settings.insert(
             "viewer.verticalExpansion".to_string(),
             format!("{:.6}", self.tree_viewer.vertical_expansion()),
@@ -1236,12 +1295,18 @@ impl FigTreeGui {
             render_backend_name(self.render_backend).to_string(),
         );
 
-        settings.insert("trees.rooting".to_string(), self.root_tree_enabled.to_string());
+        settings.insert(
+            "trees.rooting".to_string(),
+            self.root_tree_enabled.to_string(),
+        );
         settings.insert(
             "trees.rootingType".to_string(),
             root_method_name(self.root_method).to_string(),
         );
-        settings.insert("trees.order".to_string(), self.order_nodes_enabled.to_string());
+        settings.insert(
+            "trees.order".to_string(),
+            self.order_nodes_enabled.to_string(),
+        );
         settings.insert(
             "trees.orderType".to_string(),
             node_ordering_name(self.node_ordering).to_string(),
@@ -1493,7 +1558,8 @@ impl FigTreeGui {
             self.tree_painter.tip_label_precision.to_string(),
         );
 
-        let mut branch_overrides: Vec<_> = self.tree_painter.branch_color_overrides().iter().collect();
+        let mut branch_overrides: Vec<_> =
+            self.tree_painter.branch_color_overrides().iter().collect();
         branch_overrides.sort_by_key(|(node_id, _)| **node_id);
         for (node_id, color) in branch_overrides {
             settings.insert(
@@ -1502,11 +1568,41 @@ impl FigTreeGui {
             );
         }
 
-        let mut tip_overrides: Vec<_> = self.tree_painter.tip_label_color_overrides().iter().collect();
+        let mut tip_overrides: Vec<_> = self
+            .tree_painter
+            .tip_label_color_overrides()
+            .iter()
+            .collect();
         tip_overrides.sort_by_key(|(node_id, _)| **node_id);
         for (node_id, color) in tip_overrides {
             settings.insert(
                 format!("override.tipLabel.{}", node_id),
+                color_to_hex_rgba(*color),
+            );
+        }
+
+        let mut tip_shape_overrides: Vec<_> = self
+            .tree_painter
+            .tip_shape_color_overrides()
+            .iter()
+            .collect();
+        tip_shape_overrides.sort_by_key(|(node_id, _)| **node_id);
+        for (node_id, color) in tip_shape_overrides {
+            settings.insert(
+                format!("override.tipShape.{}", node_id),
+                color_to_hex_rgba(*color),
+            );
+        }
+
+        let mut node_shape_overrides: Vec<_> = self
+            .tree_painter
+            .node_shape_color_overrides()
+            .iter()
+            .collect();
+        node_shape_overrides.sort_by_key(|(node_id, _)| **node_id);
+        for (node_id, color) in node_shape_overrides {
+            settings.insert(
+                format!("override.nodeShape.{}", node_id),
                 color_to_hex_rgba(*color),
             );
         }
@@ -1524,10 +1620,16 @@ impl FigTreeGui {
     }
 
     fn apply_rtr_settings(&mut self, settings: &BTreeMap<String, String>) {
-        if let Some(v) = settings.get("layout.type").and_then(|s| parse_layout_type(s)) {
+        if let Some(v) = settings
+            .get("layout.type")
+            .and_then(|s| parse_layout_type(s))
+        {
             self.current_layout = v;
         }
-        if let Some(v) = settings.get("viewer.zoom").and_then(|s| s.parse::<f32>().ok()) {
+        if let Some(v) = settings
+            .get("viewer.zoom")
+            .and_then(|s| s.parse::<f32>().ok())
+        {
             self.tree_viewer.set_zoom(v.clamp(1.0, 5.0));
         }
         if let Some(v) = settings
@@ -1542,7 +1644,10 @@ impl FigTreeGui {
         {
             self.tree_viewer.set_selection_mode(v);
         }
-        if let Some(v) = settings.get("render.backend").and_then(|s| parse_render_backend(s)) {
+        if let Some(v) = settings
+            .get("render.backend")
+            .and_then(|s| parse_render_backend(s))
+        {
             self.render_backend = v;
         }
 
@@ -1604,14 +1709,26 @@ impl FigTreeGui {
         {
             self.tree_painter.node_radius = v.max(0.5);
         }
-        apply_color_setting(settings, "painter.leafColor", &mut self.tree_painter.leaf_color);
+        apply_color_setting(
+            settings,
+            "painter.leafColor",
+            &mut self.tree_painter.leaf_color,
+        );
         apply_color_setting(
             settings,
             "painter.internalNodeColor",
             &mut self.tree_painter.internal_node_color,
         );
-        apply_color_setting(settings, "painter.selectedColor", &mut self.tree_painter.selected_color);
-        apply_color_setting(settings, "painter.labelColor", &mut self.tree_painter.label_color);
+        apply_color_setting(
+            settings,
+            "painter.selectedColor",
+            &mut self.tree_painter.selected_color,
+        );
+        apply_color_setting(
+            settings,
+            "painter.labelColor",
+            &mut self.tree_painter.label_color,
+        );
         apply_color_setting(
             settings,
             "painter.branchLabelColor",
@@ -1622,7 +1739,11 @@ impl FigTreeGui {
             "painter.backgroundColor",
             &mut self.tree_painter.background_color,
         );
-        apply_color_setting(settings, "painter.canvasColor", &mut self.tree_painter.canvas_color);
+        apply_color_setting(
+            settings,
+            "painter.canvasColor",
+            &mut self.tree_painter.canvas_color,
+        );
         apply_color_setting(
             settings,
             "painter.highlightColor",
@@ -1634,14 +1755,26 @@ impl FigTreeGui {
             &mut self.tree_painter.tip_selection_color,
         );
 
-        apply_bool_setting(settings, "painter.showTipLabels", &mut self.tree_painter.show_tip_labels);
-        apply_bool_setting(settings, "painter.showNodeLabels", &mut self.tree_painter.show_node_labels);
+        apply_bool_setting(
+            settings,
+            "painter.showTipLabels",
+            &mut self.tree_painter.show_tip_labels,
+        );
+        apply_bool_setting(
+            settings,
+            "painter.showNodeLabels",
+            &mut self.tree_painter.show_node_labels,
+        );
         apply_bool_setting(
             settings,
             "painter.showBranchLabels",
             &mut self.tree_painter.show_branch_labels,
         );
-        apply_bool_setting(settings, "painter.showScaleBar", &mut self.tree_painter.show_scale_bar);
+        apply_bool_setting(
+            settings,
+            "painter.showScaleBar",
+            &mut self.tree_painter.show_scale_bar,
+        );
         if let Some(v) = settings
             .get("painter.scaleBarRange")
             .and_then(|s| s.parse::<f32>().ok())
@@ -1660,7 +1793,11 @@ impl FigTreeGui {
         {
             self.tree_painter.scale_bar_line_width = v.max(0.5);
         }
-        apply_bool_setting(settings, "painter.showTipShapes", &mut self.tree_painter.show_tip_shapes);
+        apply_bool_setting(
+            settings,
+            "painter.showTipShapes",
+            &mut self.tree_painter.show_tip_shapes,
+        );
         apply_bool_setting(
             settings,
             "painter.showNodeShapes",
@@ -1746,7 +1883,11 @@ impl FigTreeGui {
         {
             self.tree_painter.node_shape_fixed_color = v;
         }
-        apply_bool_setting(settings, "painter.showNodeBars", &mut self.tree_painter.show_node_bars);
+        apply_bool_setting(
+            settings,
+            "painter.showNodeBars",
+            &mut self.tree_painter.show_node_bars,
+        );
         apply_bool_setting(
             settings,
             "painter.alignTipLabels",
@@ -1870,6 +2011,20 @@ impl FigTreeGui {
                     self.tree_painter.set_tip_label_color(id, color);
                 }
             } else if let Some(id) = k
+                .strip_prefix("override.tipShape.")
+                .and_then(|s| s.parse::<NodeId>().ok())
+            {
+                if let Some(color) = parse_hex_color_alpha(v) {
+                    self.tree_painter.set_tip_shape_color(id, color);
+                }
+            } else if let Some(id) = k
+                .strip_prefix("override.nodeShape.")
+                .and_then(|s| s.parse::<NodeId>().ok())
+            {
+                if let Some(color) = parse_hex_color_alpha(v) {
+                    self.tree_painter.set_node_shape_color(id, color);
+                }
+            } else if let Some(id) = k
                 .strip_prefix("highlight.clade.")
                 .and_then(|s| s.parse::<NodeId>().ok())
             {
@@ -1879,8 +2034,7 @@ impl FigTreeGui {
             }
         }
 
-        self.tree_render_signature = None;
-        self.tree_texture = None;
+        self.invalidate_layer_caches();
     }
 
     fn export_vector_format(&mut self, path: &std::path::Path, format: ExportFormat) {
@@ -2044,7 +2198,9 @@ impl FigTreeGui {
                             *size *= export_scale;
                         }
                         crate::tree::scene_graph::ScenePrimitive::StrokeLine { style, .. }
-                        | crate::tree::scene_graph::ScenePrimitive::StrokePolyline { style, .. }
+                        | crate::tree::scene_graph::ScenePrimitive::StrokePolyline {
+                            style, ..
+                        }
                         | crate::tree::scene_graph::ScenePrimitive::StrokeCircularBranch {
                             style,
                             ..
@@ -2200,145 +2356,160 @@ impl FigTreeGui {
         Some((tree, layout))
     }
 
-    fn render_signature(
+    fn hash_color<H: Hasher>(h: &mut H, c: Color32) {
+        c.r().hash(h);
+        c.g().hash(h);
+        c.b().hash(h);
+        c.a().hash(h);
+    }
+
+    fn hash_node_set<H: Hasher>(h: &mut H, set: &std::collections::HashSet<NodeId>) {
+        let mut ids: Vec<_> = set.iter().copied().collect();
+        ids.sort_unstable();
+        ids.hash(h);
+    }
+
+    fn hash_tree<H: Hasher>(h: &mut H, tree: &crate::tree::Tree) {
+        tree.id.hash(h);
+        tree.root.hash(h);
+        tree.nodes.len().hash(h);
+        for n in &tree.nodes {
+            n.id.hash(h);
+            n.parent.hash(h);
+            n.length.map(f64::to_bits).hash(h);
+            n.name.hash(h);
+            n.label.hash(h);
+            n.children.hash(h);
+        }
+    }
+
+    fn hash_branch_overrides<H: Hasher>(
+        h: &mut H,
+        tree: &crate::tree::Tree,
+        painter: &crate::tree::painter::TreePainter,
+    ) {
+        for node in &tree.nodes {
+            node.id.hash(h);
+            if let Some(color) = painter.branch_color_override(node.id) {
+                1u8.hash(h);
+                Self::hash_color(h, color);
+            } else {
+                0u8.hash(h);
+            }
+        }
+    }
+
+    fn hash_tip_label_overrides<H: Hasher>(
+        h: &mut H,
+        tree: &crate::tree::Tree,
+        painter: &crate::tree::painter::TreePainter,
+    ) {
+        for node in &tree.nodes {
+            node.id.hash(h);
+            if let Some(color) = painter.tip_label_color_override(node.id) {
+                1u8.hash(h);
+                Self::hash_color(h, color);
+            } else {
+                0u8.hash(h);
+            }
+        }
+    }
+
+    fn hash_tip_shape_overrides<H: Hasher>(
+        h: &mut H,
+        tree: &crate::tree::Tree,
+        painter: &crate::tree::painter::TreePainter,
+    ) {
+        for node in &tree.nodes {
+            node.id.hash(h);
+            if let Some(color) = painter.tip_shape_color_override(node.id) {
+                1u8.hash(h);
+                Self::hash_color(h, color);
+            } else {
+                0u8.hash(h);
+            }
+        }
+    }
+
+    fn hash_node_shape_overrides<H: Hasher>(
+        h: &mut H,
+        tree: &crate::tree::Tree,
+        painter: &crate::tree::painter::TreePainter,
+    ) {
+        for node in &tree.nodes {
+            node.id.hash(h);
+            if let Some(color) = painter.node_shape_color_override(node.id) {
+                1u8.hash(h);
+                Self::hash_color(h, color);
+            } else {
+                0u8.hash(h);
+            }
+        }
+    }
+
+    fn hash_clade_highlights<H: Hasher>(h: &mut H, painter: &crate::tree::painter::TreePainter) {
+        let mut highlighted: Vec<_> = painter.highlighted_clades().iter().collect();
+        highlighted.sort_by_key(|(node_id, _)| **node_id);
+        for (node_id, color) in highlighted {
+            node_id.hash(h);
+            Self::hash_color(h, *color);
+        }
+    }
+
+    fn hash_shared_render_state<H: Hasher>(
+        &self,
+        h: &mut H,
+        tree: &crate::tree::Tree,
+        canvas_width: f32,
+        canvas_height: f32,
+    ) {
+        Self::hash_tree(h, tree);
+        self.current_layout.hash(h);
+        self.transform_branches_enabled.hash(h);
+        self.branch_transform.hash(h);
+        self.tree_viewer.current_tree_index().hash(h);
+        self.tree_viewer.zoom.to_bits().hash(h);
+        self.tree_viewer.vertical_expansion().to_bits().hash(h);
+        canvas_width.to_bits().hash(h);
+        canvas_height.to_bits().hash(h);
+        self.pixels_per_point.to_bits().hash(h);
+        self.render_backend.hash(h);
+    }
+
+    fn base_render_signature(
         &self,
         tree: &crate::tree::Tree,
         canvas_width: f32,
         canvas_height: f32,
     ) -> u64 {
-        fn hash_color<H: Hasher>(h: &mut H, c: Color32) {
-            c.r().hash(h);
-            c.g().hash(h);
-            c.b().hash(h);
-            c.a().hash(h);
-        }
-
-        fn hash_node_set<H: Hasher>(h: &mut H, set: &std::collections::HashSet<NodeId>) {
-            let mut ids: Vec<_> = set.iter().copied().collect();
-            ids.sort_unstable();
-            ids.hash(h);
-        }
-
-        fn hash_tree<H: Hasher>(h: &mut H, tree: &crate::tree::Tree) {
-            tree.id.hash(h);
-            tree.root.hash(h);
-            tree.nodes.len().hash(h);
-            for n in &tree.nodes {
-                n.id.hash(h);
-                n.parent.hash(h);
-                n.length.map(f64::to_bits).hash(h);
-                n.name.hash(h);
-                n.label.hash(h);
-                n.children.hash(h);
-            }
-        }
-
-        fn hash_override_maps<H: Hasher>(
-            h: &mut H,
-            tree: &crate::tree::Tree,
-            painter: &crate::tree::painter::TreePainter,
-        ) {
-            // Keep deterministic order: iterate in node id order.
-            for node in &tree.nodes {
-                node.id.hash(h);
-                if let Some(color) = painter.branch_color_override(node.id) {
-                    1u8.hash(h);
-                    hash_color(h, color);
-                } else {
-                    0u8.hash(h);
-                }
-                if let Some(color) = painter.tip_label_color_override(node.id) {
-                    1u8.hash(h);
-                    hash_color(h, color);
-                } else {
-                    0u8.hash(h);
-                }
-            }
-
-            // Clade highlights map is unordered; sort by node id before hashing.
-            let mut highlighted: Vec<_> = painter.highlighted_clades().iter().collect();
-            highlighted.sort_by_key(|(node_id, _)| **node_id);
-            for (node_id, color) in highlighted {
-                node_id.hash(h);
-                hash_color(h, *color);
-            }
-        }
-
         let mut hasher = DefaultHasher::new();
-        hash_tree(&mut hasher, tree);
-
-        self.current_layout.hash(&mut hasher);
-        self.transform_branches_enabled.hash(&mut hasher);
-        self.branch_transform.hash(&mut hasher);
-        self.tree_viewer.current_tree_index().hash(&mut hasher);
-        self.tree_viewer.selection_mode().hash(&mut hasher);
-        hash_node_set(&mut hasher, self.tree_viewer.selected_nodes());
-        hash_node_set(&mut hasher, self.tree_viewer.selected_tips());
-
-        self.tree_viewer.zoom.to_bits().hash(&mut hasher);
-        self.render_backend.hash(&mut hasher);
-        self.tree_viewer
-            .vertical_expansion()
-            .to_bits()
-            .hash(&mut hasher);
-        canvas_width.to_bits().hash(&mut hasher);
-        canvas_height.to_bits().hash(&mut hasher);
-        self.pixels_per_point.to_bits().hash(&mut hasher);
-
+        self.hash_shared_render_state(&mut hasher, tree, canvas_width, canvas_height);
         self.tree_painter
             .branch_stroke
             .width
             .to_bits()
             .hash(&mut hasher);
-        hash_color(&mut hasher, self.tree_painter.branch_stroke.color);
-        self.tree_painter
-            .branch_highlight_stroke
-            .width
-            .to_bits()
-            .hash(&mut hasher);
-        hash_color(&mut hasher, self.tree_painter.branch_highlight_stroke.color);
-        self.tree_painter.node_radius.to_bits().hash(&mut hasher);
-        hash_color(&mut hasher, self.tree_painter.leaf_color);
-        hash_color(&mut hasher, self.tree_painter.internal_node_color);
-        hash_color(&mut hasher, self.tree_painter.selected_color);
-        hash_color(&mut hasher, self.tree_painter.label_color);
-        hash_color(&mut hasher, self.tree_painter.branch_label_color);
-        hash_color(&mut hasher, self.tree_painter.background_color);
-        hash_color(&mut hasher, self.tree_painter.canvas_color);
-        hash_color(&mut hasher, self.tree_painter.highlight_color);
-        hash_color(&mut hasher, self.tree_painter.tip_selection_color);
+        Self::hash_color(&mut hasher, self.tree_painter.branch_stroke.color);
+        Self::hash_color(&mut hasher, self.tree_painter.background_color);
+        Self::hash_color(&mut hasher, self.tree_painter.canvas_color);
+        Self::hash_branch_overrides(&mut hasher, tree, &self.tree_painter);
+        hasher.finish()
+    }
 
+    fn decor_render_signature(
+        &self,
+        tree: &crate::tree::Tree,
+        canvas_width: f32,
+        canvas_height: f32,
+    ) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash_shared_render_state(&mut hasher, tree, canvas_width, canvas_height);
+
+        Self::hash_color(&mut hasher, self.tree_painter.label_color);
+        Self::hash_color(&mut hasher, self.tree_painter.branch_label_color);
         self.tree_painter.show_tip_labels.hash(&mut hasher);
         self.tree_painter.show_node_labels.hash(&mut hasher);
         self.tree_painter.show_branch_labels.hash(&mut hasher);
-        self.tree_painter.show_scale_bar.hash(&mut hasher);
-        self.tree_painter.scale_bar_range.to_bits().hash(&mut hasher);
-        self.tree_painter
-            .scale_bar_font_size
-            .to_bits()
-            .hash(&mut hasher);
-        self.tree_painter
-            .scale_bar_line_width
-            .to_bits()
-            .hash(&mut hasher);
-        self.tree_painter.show_tip_shapes.hash(&mut hasher);
-        self.tree_painter.show_node_shapes.hash(&mut hasher);
-        self.tree_painter.tip_shape.hash(&mut hasher);
-        self.tree_painter.node_shape.hash(&mut hasher);
-        self.tree_painter.tip_shape_size_mode.hash(&mut hasher);
-        self.tree_painter.node_shape_size_mode.hash(&mut hasher);
-        self.tree_painter.tip_shape_size_attribute.hash(&mut hasher);
-        self.tree_painter.node_shape_size_attribute.hash(&mut hasher);
-        self.tree_painter.tip_shape_max_size.to_bits().hash(&mut hasher);
-        self.tree_painter.node_shape_max_size.to_bits().hash(&mut hasher);
-        self.tree_painter.tip_shape_min_size.to_bits().hash(&mut hasher);
-        self.tree_painter.node_shape_min_size.to_bits().hash(&mut hasher);
-        self.tree_painter.tip_shape_color_mode.hash(&mut hasher);
-        self.tree_painter.node_shape_color_mode.hash(&mut hasher);
-        hash_color(&mut hasher, self.tree_painter.tip_shape_fixed_color);
-        hash_color(&mut hasher, self.tree_painter.node_shape_fixed_color);
-        self.tree_painter.show_node_bars.hash(&mut hasher);
-        self.tree_painter.align_tip_labels.hash(&mut hasher);
         self.tree_painter.tip_label_display.hash(&mut hasher);
         self.tree_painter.node_label_display.hash(&mut hasher);
         self.tree_painter.branch_label_display.hash(&mut hasher);
@@ -2362,15 +2533,134 @@ impl FigTreeGui {
             .hash(&mut hasher);
         self.tree_painter.tip_label_format.hash(&mut hasher);
         self.tree_painter.tip_label_precision.hash(&mut hasher);
+
+        self.tree_painter.show_tip_shapes.hash(&mut hasher);
+        self.tree_painter.show_node_shapes.hash(&mut hasher);
+        self.tree_painter.tip_shape.hash(&mut hasher);
+        self.tree_painter.node_shape.hash(&mut hasher);
+        self.tree_painter.tip_shape_size_mode.hash(&mut hasher);
+        self.tree_painter.node_shape_size_mode.hash(&mut hasher);
+        self.tree_painter.tip_shape_size_attribute.hash(&mut hasher);
+        self.tree_painter
+            .node_shape_size_attribute
+            .hash(&mut hasher);
+        self.tree_painter
+            .tip_shape_max_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter
+            .node_shape_max_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter
+            .tip_shape_min_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter
+            .node_shape_min_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter.tip_shape_color_mode.hash(&mut hasher);
+        self.tree_painter.node_shape_color_mode.hash(&mut hasher);
+        Self::hash_color(&mut hasher, self.tree_painter.tip_shape_fixed_color);
+        Self::hash_color(&mut hasher, self.tree_painter.node_shape_fixed_color);
+        Self::hash_color(&mut hasher, self.tree_painter.leaf_color);
+        Self::hash_color(&mut hasher, self.tree_painter.internal_node_color);
+
+        self.tree_painter.show_node_bars.hash(&mut hasher);
         self.tree_painter.node_bar_field().hash(&mut hasher);
-        hash_color(&mut hasher, self.tree_painter.node_bar_color());
+        Self::hash_color(&mut hasher, self.tree_painter.node_bar_color());
         self.tree_painter
             .node_bar_thickness()
             .to_bits()
             .hash(&mut hasher);
-        hash_override_maps(&mut hasher, tree, &self.tree_painter);
-        self.render_backend.hash(&mut hasher);
 
+        self.tree_painter.show_scale_bar.hash(&mut hasher);
+        self.tree_painter
+            .scale_bar_range
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter
+            .scale_bar_font_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter
+            .scale_bar_line_width
+            .to_bits()
+            .hash(&mut hasher);
+
+        self.tree_painter.align_tip_labels.hash(&mut hasher);
+        Self::hash_tip_label_overrides(&mut hasher, tree, &self.tree_painter);
+        Self::hash_tip_shape_overrides(&mut hasher, tree, &self.tree_painter);
+        Self::hash_node_shape_overrides(&mut hasher, tree, &self.tree_painter);
+        hasher.finish()
+    }
+
+    fn interaction_render_signature(
+        &self,
+        tree: &crate::tree::Tree,
+        canvas_width: f32,
+        canvas_height: f32,
+    ) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash_shared_render_state(&mut hasher, tree, canvas_width, canvas_height);
+
+        self.tree_viewer.selection_mode().hash(&mut hasher);
+        Self::hash_node_set(&mut hasher, self.tree_viewer.selected_nodes());
+        Self::hash_node_set(&mut hasher, self.tree_viewer.selected_tips());
+        Self::hash_clade_highlights(&mut hasher, &self.tree_painter);
+
+        self.tree_painter.show_tip_labels.hash(&mut hasher);
+        self.tree_painter.tip_label_display.hash(&mut hasher);
+        self.tree_painter
+            .tip_label_font_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter.tip_label_format.hash(&mut hasher);
+        self.tree_painter.tip_label_precision.hash(&mut hasher);
+        self.tree_painter.align_tip_labels.hash(&mut hasher);
+
+        self.tree_painter.show_tip_shapes.hash(&mut hasher);
+        self.tree_painter.show_node_shapes.hash(&mut hasher);
+        self.tree_painter.tip_shape.hash(&mut hasher);
+        self.tree_painter.node_shape.hash(&mut hasher);
+        self.tree_painter.tip_shape_size_mode.hash(&mut hasher);
+        self.tree_painter.node_shape_size_mode.hash(&mut hasher);
+        self.tree_painter.tip_shape_size_attribute.hash(&mut hasher);
+        self.tree_painter
+            .node_shape_size_attribute
+            .hash(&mut hasher);
+        self.tree_painter
+            .tip_shape_max_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter
+            .node_shape_max_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter
+            .tip_shape_min_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter
+            .node_shape_min_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter.tip_shape_color_mode.hash(&mut hasher);
+        self.tree_painter.node_shape_color_mode.hash(&mut hasher);
+        self.tree_painter.node_radius.to_bits().hash(&mut hasher);
+
+        self.tree_painter
+            .branch_stroke
+            .width
+            .to_bits()
+            .hash(&mut hasher);
+        self.tree_painter
+            .branch_highlight_stroke
+            .width
+            .to_bits()
+            .hash(&mut hasher);
+        Self::hash_color(&mut hasher, self.tree_painter.tip_selection_color);
         hasher.finish()
     }
 
@@ -2384,6 +2674,7 @@ impl FigTreeGui {
         selected_tips: &std::collections::HashSet<NodeId>,
         canvas_width: f32,
         canvas_height: f32,
+        scene_layer: SceneLayer,
     ) -> Result<crate::tree::skia_renderer::SkiaRenderOutput, String> {
         match self.render_backend {
             RenderBackend::Skia => self.skia_renderer.render(
@@ -2397,6 +2688,7 @@ impl FigTreeGui {
                 inner,
                 1.0,
                 Some(self.tree_viewer.selection_mode()),
+                scene_layer,
                 self.pixels_per_point,
                 self.render_resolution_scale(canvas_width, canvas_height),
             ),
@@ -2411,6 +2703,7 @@ impl FigTreeGui {
                 inner,
                 1.0,
                 Some(self.tree_viewer.selection_mode()),
+                scene_layer,
                 self.pixels_per_point,
                 self.render_resolution_scale(canvas_width, canvas_height),
             ),
@@ -2492,42 +2785,117 @@ impl FigTreeGui {
                 }
             };
 
-            let render_signature = self.render_signature(tree_ref, canvas_width, canvas_height);
-            let needs_rerender =
-                self.tree_texture.is_none() || self.tree_render_signature != Some(render_signature);
+            let base_signature = self.base_render_signature(tree_ref, canvas_width, canvas_height);
+            let decor_signature =
+                self.decor_render_signature(tree_ref, canvas_width, canvas_height);
+            let interaction_signature =
+                self.interaction_render_signature(tree_ref, canvas_width, canvas_height);
 
-            if needs_rerender {
+            let needs_base = self.base_tree_texture.is_none()
+                || self.base_render_signature != Some(base_signature);
+            let needs_decor = self.decor_tree_texture.is_none()
+                || self.decor_render_signature != Some(decor_signature);
+            let needs_interaction = self.interaction_tree_texture.is_none()
+                || self.interaction_render_signature != Some(interaction_signature);
+
+            if needs_base || needs_decor || needs_interaction {
                 if let Some((tree, layout)) = self.build_display_tree_layout() {
                     let selected_nodes = self.tree_viewer.selected_nodes().clone();
                     let selected_tips = self.tree_viewer.selected_tips().clone();
 
-                    match self.render_with_current_backend(
-                        &tree,
-                        &layout,
-                        rect,
-                        inner,
-                        &selected_nodes,
-                        &selected_tips,
-                        canvas_width,
-                        canvas_height,
-                    ) {
-                        Ok(output) => {
-                            if let Some(texture) = self.tree_texture.as_mut() {
-                                texture.set(output.image, egui::TextureOptions::LINEAR);
-                            } else {
-                                self.tree_texture = Some(ui.ctx().load_texture(
-                                    "tree_canvas_skia",
-                                    output.image,
-                                    egui::TextureOptions::LINEAR,
-                                ));
+                    if needs_base {
+                        match self.render_with_current_backend(
+                            &tree,
+                            &layout,
+                            rect,
+                            inner,
+                            &selected_nodes,
+                            &selected_tips,
+                            canvas_width,
+                            canvas_height,
+                            SceneLayer::Base,
+                        ) {
+                            Ok(output) => {
+                                if let Some(texture) = self.base_tree_texture.as_mut() {
+                                    texture.set(output.image, egui::TextureOptions::LINEAR);
+                                } else {
+                                    self.base_tree_texture = Some(ui.ctx().load_texture(
+                                        "tree_canvas_base",
+                                        output.image,
+                                        egui::TextureOptions::LINEAR,
+                                    ));
+                                }
+                                self.base_render_signature = Some(base_signature);
                             }
-                            self.cached_tip_label_hits_local = output.tip_label_hits;
-                            self.tree_render_signature = Some(render_signature);
+                            Err(err) => {
+                                self.last_error = Some(format!("Base layer render failed: {err}"));
+                                self.base_render_signature = None;
+                            }
                         }
-                        Err(err) => {
-                            self.last_error = Some(format!("Skia render failed: {err}"));
-                            self.tree_render_signature = None;
-                            self.cached_tip_label_hits_local.clear();
+                    }
+
+                    if needs_decor {
+                        match self.render_with_current_backend(
+                            &tree,
+                            &layout,
+                            rect,
+                            inner,
+                            &selected_nodes,
+                            &selected_tips,
+                            canvas_width,
+                            canvas_height,
+                            SceneLayer::Decor,
+                        ) {
+                            Ok(output) => {
+                                if let Some(texture) = self.decor_tree_texture.as_mut() {
+                                    texture.set(output.image, egui::TextureOptions::LINEAR);
+                                } else {
+                                    self.decor_tree_texture = Some(ui.ctx().load_texture(
+                                        "tree_canvas_decor",
+                                        output.image,
+                                        egui::TextureOptions::LINEAR,
+                                    ));
+                                }
+                                self.cached_tip_label_hits_local = output.tip_label_hits;
+                                self.decor_render_signature = Some(decor_signature);
+                            }
+                            Err(err) => {
+                                self.last_error = Some(format!("Decor layer render failed: {err}"));
+                                self.decor_render_signature = None;
+                                self.cached_tip_label_hits_local.clear();
+                            }
+                        }
+                    }
+
+                    if needs_interaction {
+                        match self.render_with_current_backend(
+                            &tree,
+                            &layout,
+                            rect,
+                            inner,
+                            &selected_nodes,
+                            &selected_tips,
+                            canvas_width,
+                            canvas_height,
+                            SceneLayer::Interaction,
+                        ) {
+                            Ok(output) => {
+                                if let Some(texture) = self.interaction_tree_texture.as_mut() {
+                                    texture.set(output.image, egui::TextureOptions::LINEAR);
+                                } else {
+                                    self.interaction_tree_texture = Some(ui.ctx().load_texture(
+                                        "tree_canvas_interaction",
+                                        output.image,
+                                        egui::TextureOptions::LINEAR,
+                                    ));
+                                }
+                                self.interaction_render_signature = Some(interaction_signature);
+                            }
+                            Err(err) => {
+                                self.last_error =
+                                    Some(format!("Interaction layer render failed: {err}"));
+                                self.interaction_render_signature = None;
+                            }
                         }
                     }
                 } else {
@@ -2536,13 +2904,16 @@ impl FigTreeGui {
                 }
             }
 
-            if let Some(texture) = &self.tree_texture {
-                painter.image(
-                    texture.id(),
-                    rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            for texture in [
+                self.base_tree_texture.as_ref(),
+                self.decor_tree_texture.as_ref(),
+                self.interaction_tree_texture.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
             }
 
             let tip_label_hits: Vec<_> = self
@@ -2783,7 +3154,10 @@ impl eframe::App for FigTreeGui {
                     }
 
                     if ui
-                        .add_enabled(self.tree_viewer.current_tree().is_some(), egui::Button::new("Save"))
+                        .add_enabled(
+                            self.tree_viewer.current_tree().is_some(),
+                            egui::Button::new("Save"),
+                        )
                         .clicked()
                     {
                         self.save_rtr();
@@ -2846,7 +3220,6 @@ impl eframe::App for FigTreeGui {
                         self.export_jpeg_dialog(ctx);
                         ui.close();
                     }
-
                 });
 
                 ui.menu_button("Edit", |ui| {
@@ -3032,9 +3405,9 @@ impl eframe::App for FigTreeGui {
                             );
                             if highlight_response.clicked() {
                                 // Open highlight color picker
-                                let highlighted_root = self
-                                    .selected_branch_node()
-                                    .or_else(|| self.tree_viewer.selected_nodes().iter().next().copied());
+                                let highlighted_root = self.selected_branch_node().or_else(|| {
+                                    self.tree_viewer.selected_nodes().iter().next().copied()
+                                });
                                 if let Some(node_id) = highlighted_root {
                                     self.highlighted_clade = Some(node_id);
                                     let initial = self.highlight_picker_color;
@@ -3191,13 +3564,13 @@ impl eframe::App for FigTreeGui {
 
             window.open(&mut open).show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    let custom_btn =
-                        egui::Button::new("Custom").selected(matches!(self.color_picker_panel, ColorPanelMode::Custom));
+                    let custom_btn = egui::Button::new("Custom")
+                        .selected(matches!(self.color_picker_panel, ColorPanelMode::Custom));
                     if ui.add(custom_btn).clicked() {
                         self.color_picker_panel = ColorPanelMode::Custom;
                     }
-                    let library_btn =
-                        egui::Button::new("Library").selected(matches!(self.color_picker_panel, ColorPanelMode::Library));
+                    let library_btn = egui::Button::new("Library")
+                        .selected(matches!(self.color_picker_panel, ColorPanelMode::Library));
                     if ui.add(library_btn).clicked() {
                         self.color_picker_panel = ColorPanelMode::Library;
                     }
@@ -3222,8 +3595,12 @@ impl eframe::App for FigTreeGui {
                                     ColorValueMode::Rgb => ColorValueMode::Hex,
                                 };
                                 if matches!(self.color_picker_mode, ColorValueMode::Hex) {
-                                    self.color_picker_hex_input =
-                                        format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+                                    self.color_picker_hex_input = format!(
+                                        "#{:02X}{:02X}{:02X}",
+                                        color.r(),
+                                        color.g(),
+                                        color.b()
+                                    );
                                 }
                             }
 
@@ -3239,12 +3616,16 @@ impl eframe::App for FigTreeGui {
                                             ui.set_style(style);
                                             ui.add_sized(
                                                 [rgb_inputs_total_width, 20.0],
-                                                egui::TextEdit::singleline(&mut self.color_picker_hex_input),
+                                                egui::TextEdit::singleline(
+                                                    &mut self.color_picker_hex_input,
+                                                ),
                                             )
                                         })
                                         .inner;
                                     if response.changed() {
-                                        if let Some(parsed) = parse_hex_color(&self.color_picker_hex_input) {
+                                        if let Some(parsed) =
+                                            parse_hex_color(&self.color_picker_hex_input)
+                                        {
                                             color = parsed;
                                             self.color_picker_hex_input = format!(
                                                 "#{:02X}{:02X}{:02X}",
@@ -3272,27 +3653,37 @@ impl eframe::App for FigTreeGui {
                                         rgb_changed |= ui
                                             .add_sized(
                                                 [rgb_input_width, 20.0],
-                                                egui::DragValue::new(&mut r).range(0..=255).speed(1.0),
+                                                egui::DragValue::new(&mut r)
+                                                    .range(0..=255)
+                                                    .speed(1.0),
                                             )
                                             .changed();
                                         rgb_changed |= ui
                                             .add_sized(
                                                 [rgb_input_width, 20.0],
-                                                egui::DragValue::new(&mut g).range(0..=255).speed(1.0),
+                                                egui::DragValue::new(&mut g)
+                                                    .range(0..=255)
+                                                    .speed(1.0),
                                             )
                                             .changed();
                                         rgb_changed |= ui
                                             .add_sized(
                                                 [rgb_input_width, 20.0],
-                                                egui::DragValue::new(&mut b).range(0..=255).speed(1.0),
+                                                egui::DragValue::new(&mut b)
+                                                    .range(0..=255)
+                                                    .speed(1.0),
                                             )
                                             .changed();
                                     });
 
                                     if rgb_changed {
                                         color = Color32::from_rgb(r as u8, g as u8, b as u8);
-                                        self.color_picker_hex_input =
-                                            format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+                                        self.color_picker_hex_input = format!(
+                                            "#{:02X}{:02X}{:02X}",
+                                            color.r(),
+                                            color.g(),
+                                            color.b()
+                                        );
                                     }
                                 }
                             }
@@ -3310,12 +3701,16 @@ impl eframe::App for FigTreeGui {
                             if shown > 0 {
                                 let spacing = ui.spacing().item_spacing.x;
                                 let row_width = ui.available_width().max(80.0);
-                                let cell = ((row_width - spacing * (shown as f32 - 1.0)) / shown as f32)
+                                let cell = ((row_width - spacing * (shown as f32 - 1.0))
+                                    / shown as f32)
                                     .clamp(11.0, 20.0);
                                 for palette_color in palette_colors.into_iter().take(shown) {
-                                    let (rect, response) =
-                                        ui.allocate_exact_size(egui::vec2(cell, cell), egui::Sense::click());
-                                    ui.painter().rect_filled(rect.shrink(1.0), 3.0, palette_color);
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        egui::vec2(cell, cell),
+                                        egui::Sense::click(),
+                                    );
+                                    ui.painter()
+                                        .rect_filled(rect.shrink(1.0), 3.0, palette_color);
                                     if response.clicked() {
                                         color = palette_color;
                                         picker_changed = true;
@@ -3329,8 +3724,10 @@ impl eframe::App for FigTreeGui {
                         let side_padding = 0.0;
                         let picker_height = 250.0;
                         let row_width = ui.available_width().max(96.0);
-                        let (row_rect, _) =
-                            ui.allocate_exact_size(egui::vec2(row_width, picker_height), egui::Sense::hover());
+                        let (row_rect, _) = ui.allocate_exact_size(
+                            egui::vec2(row_width, picker_height),
+                            egui::Sense::hover(),
+                        );
                         let picker_rect = row_rect.shrink2(egui::vec2(side_padding, 0.0));
                         let picker_width = picker_rect.width().max(80.0);
                         let shifted_rect = picker_rect.translate(egui::vec2(0.0, -clip_top));
@@ -4181,7 +4578,7 @@ impl eframe::App for FigTreeGui {
                                 );
                             });
                         if self.render_backend != old_backend {
-                            self.tree_render_signature = None;
+                            self.invalidate_layer_caches();
                             self.last_error = None;
                         }
 
@@ -4780,7 +5177,8 @@ impl eframe::App for FigTreeGui {
                         ShapeColorMode::UserSelection => {
                             ui.horizontal(|ui| {
                                 ui.label("Color:");
-                                let has_tip_selection = !self.tree_viewer.selected_tips().is_empty();
+                                let has_tip_selection =
+                                    !self.selected_tip_nodes_for_shape_color().is_empty();
                                 let current_color = self.tip_shape_selection_color();
                                 let resp = ui.add_enabled(
                                     has_tip_selection,

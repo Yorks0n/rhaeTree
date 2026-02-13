@@ -6,9 +6,9 @@ use clap::{Parser, ValueEnum};
 use eframe::{egui, NativeOptions};
 use log::{error, info, warn};
 
-use crate::{gui::FigTreeGui, io, ui};
 #[cfg(target_os = "macos")]
 use crate::macos_file_open;
+use crate::{gui::FigTreeGui, io, ui};
 
 #[derive(Debug, Clone, Parser)]
 #[command(
