@@ -1,4 +1,23 @@
+# OS / filesystem
 .DS_Store
-target
+
+# Rust build artifacts
+target/
+dist/
+
+# Local assistant notes
 CLAUDE.md
-dist
+
+# Local tool state
+.claude/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs and temp files
+*.log
+*.tmp

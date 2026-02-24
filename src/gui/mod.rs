@@ -265,7 +265,7 @@ impl RenderBackend {
     fn label(self) -> &'static str {
         match self {
             Self::Skia => "Skia",
-            Self::Vello => "Vello (Experimental)",
+            Self::Vello => "Vello",
         }
     }
 }
