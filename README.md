@@ -44,3 +44,7 @@ cargo run -- [TREE_FILE]
 ## Notes
 
 - `RTR` is the session/config persistence format used by this tool.
+
+## License
+
+Licensed under the MIT License. See [LICENSE](LICENSE).
