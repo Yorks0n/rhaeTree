@@ -1,0 +1,91 @@
+#NEXUS
+begin taxa;
+	dimensions ntax=6;
+	taxlabels
+	Carp
+	Fugu
+	Frog
+	Human
+	Shark
+	Stingray
+	;
+end;
+
+begin trees;
+	tree 1 = [&R] (((Carp:2.904322,Fugu:2.904322):1.284543,(Frog:3.410778,Human:3.410778):0.778087):0.251262,(Shark:3.226887,Stingray:3.226887):1.21324);
+end;
+
+begin rhaetree;
+	set rtr.version="1";
+	set highlight.clade.5=#FFFFB4FF;
+	set layout.type="radial";
+	set override.branch.2=#BB4A4AFF;
+	set override.tipLabel.4=#B832CDFF;
+	set override.tipLabel.6=#B832CDFF;
+	set painter.alignTipLabels=false;
+	set painter.backgroundColor=#FFFFFFFF;
+	set painter.branchColor=#000000FF;
+	set painter.branchHighlightColor=#78AAFFFF;
+	set painter.branchHighlightWidth=5.000000;
+	set painter.branchLabelColor=#000000FF;
+	set painter.branchLabelDisplay="branch_length";
+	set painter.branchLabelFontSize=10.000000;
+	set painter.branchLabelNumberFormat="decimal";
+	set painter.branchLabelPrecision=2;
+	set painter.branchLineWidth=1.800000;
+	set painter.canvasColor=#FFFFFFFF;
+	set painter.highlightColor=#60BAFFFF;
+	set painter.internalNodeColor=#87CDFFFF;
+	set painter.labelColor=#000000FF;
+	set painter.leafColor=#FFCD8CFF;
+	set painter.nodeBarColor=#26496464;
+	set painter.nodeBarField=null;
+	set painter.nodeBarThickness=10.000000;
+	set painter.nodeLabelAttribute=null;
+	set painter.nodeLabelDisplay="labels";
+	set painter.nodeLabelFontSize=10.000000;
+	set painter.nodeLabelNumberFormat="decimal";
+	set painter.nodeLabelPrecision=2;
+	set painter.nodeRadius=3.000000;
+	set painter.nodeShape.colorBy="fixed";
+	set painter.nodeShape.fixedColor=#87CDFFFF;
+	set painter.nodeShape.maxSize=4.000000;
+	set painter.nodeShape.minSize=2.000000;
+	set painter.nodeShape.sizeAttribute=null;
+	set painter.nodeShape.sizeBy="fixed";
+	set painter.nodeShape.type="circle";
+	set painter.scaleBarFontSize=11.000000;
+	set painter.scaleBarLineWidth=2.000000;
+	set painter.scaleBarRange=0.500000;
+	set painter.selectedColor=#FF6464FF;
+	set painter.showBranchLabels=false;
+	set painter.showNodeBars=false;
+	set painter.showNodeLabels=false;
+	set painter.showNodeShapes=false;
+	set painter.showScaleBar=false;
+	set painter.showTipLabels=true;
+	set painter.showTipShapes=false;
+	set painter.tipLabelDisplay="labels";
+	set painter.tipLabelFontFamily="proportional";
+	set painter.tipLabelFontSize=13.000000;
+	set painter.tipLabelNumberFormat="decimal";
+	set painter.tipLabelPrecision=2;
+	set painter.tipSelectionColor=#47649696;
+	set painter.tipShape.colorBy="fixed";
+	set painter.tipShape.fixedColor=#FFCD8CFF;
+	set painter.tipShape.maxSize=4.000000;
+	set painter.tipShape.minSize=2.000000;
+	set painter.tipShape.sizeAttribute=null;
+	set painter.tipShape.sizeBy="fixed";
+	set painter.tipShape.type="circle";
+	set render.backend="vello";
+	set trees.order=false;
+	set trees.orderType="increasing";
+	set trees.rooting=false;
+	set trees.rootingType="user_selection";
+	set trees.transform=false;
+	set trees.transformType="proportional";
+	set viewer.selectionMode="taxa";
+	set viewer.verticalExpansion=1.000000;
+	set viewer.zoom=1.000000;
+end;

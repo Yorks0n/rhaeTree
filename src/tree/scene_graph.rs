@@ -126,7 +126,7 @@ pub fn build_tree_scene(
         });
     }
 
-    if include_interaction {
+    if include_base {
         for shape in painter.compute_highlight_shapes(tree, layout) {
             match shape {
                 HighlightShape::Rect {

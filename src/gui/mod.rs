@@ -2493,6 +2493,7 @@ impl FigTreeGui {
         Self::hash_color(&mut hasher, self.tree_painter.background_color);
         Self::hash_color(&mut hasher, self.tree_painter.canvas_color);
         Self::hash_branch_overrides(&mut hasher, tree, &self.tree_painter);
+        Self::hash_clade_highlights(&mut hasher, &self.tree_painter);
         hasher.finish()
     }
 
@@ -2608,7 +2609,6 @@ impl FigTreeGui {
         self.tree_viewer.selection_mode().hash(&mut hasher);
         Self::hash_node_set(&mut hasher, self.tree_viewer.selected_nodes());
         Self::hash_node_set(&mut hasher, self.tree_viewer.selected_tips());
-        Self::hash_clade_highlights(&mut hasher, &self.tree_painter);
 
         self.tree_painter.show_tip_labels.hash(&mut hasher);
         self.tree_painter.tip_label_display.hash(&mut hasher);
