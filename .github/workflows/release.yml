@@ -1,0 +1,92 @@
+name: Build macOS and Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target.name }})
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: macos
+            os: macos-latest
+          - name: windows
+            os: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build macOS app bundle
+        if: matrix.target.name == 'macos'
+        run: |
+          APP_VERSION="${GITHUB_REF_NAME}"
+          if [[ "${APP_VERSION}" == v* ]]; then
+            APP_VERSION="${APP_VERSION#v}"
+          else
+            APP_VERSION="1.0.0"
+          fi
+          bash scripts/build_macos_app.sh \
+            --bundle-id com.yorkson.rhaetree \
+            --version "${APP_VERSION}" \
+            --app-name rhaeTree
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent rhaeTree.app rhaeTree-macos.zip
+
+      - name: Build Windows executable
+        if: matrix.target.name == 'windows'
+        shell: pwsh
+        run: |
+          cargo build --release
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/rhaeTree.exe dist/rhaeTree.exe
+          Compress-Archive -Path dist/rhaeTree.exe -DestinationPath dist/rhaeTree-windows.zip -Force
+
+      - name: Upload macOS artifact
+        if: matrix.target.name == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rhaeTree-macos
+          path: dist/rhaeTree-macos.zip
+          if-no-files-found: error
+
+      - name: Upload Windows artifact
+        if: matrix.target.name == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rhaeTree-windows
+          path: dist/rhaeTree-windows.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/rhaeTree-macos/rhaeTree-macos.zip
+            artifacts/rhaeTree-windows/rhaeTree-windows.zip
