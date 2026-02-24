@@ -1,16 +1,13 @@
 use std::path::Path;
 
-#[cfg(not(target_os = "windows"))]
 use cairo::{Context, PdfSurface};
 
 use crate::export::svg::build_export_scene;
-#[cfg(not(target_os = "windows"))]
 use crate::tree::cairo_renderer::render_scene_to_context;
 use crate::tree::layout::TreeLayout;
 use crate::tree::painter::TreePainter;
 use crate::tree::Tree;
 
-#[cfg(not(target_os = "windows"))]
 pub fn export_pdf(
     tree: &Tree,
     layout: &TreeLayout,
@@ -43,16 +40,4 @@ pub fn export_pdf(
     surface.flush();
     surface.finish();
     Ok(())
-}
-
-#[cfg(target_os = "windows")]
-pub fn export_pdf(
-    _tree: &Tree,
-    _layout: &TreeLayout,
-    _painter: &TreePainter,
-    _path: &Path,
-    _width: f32,
-    _height: f32,
-) -> Result<(), String> {
-    Err("PDF export is currently unavailable on Windows builds.".to_string())
 }

@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use phylotree::tree::{Node as PhyloNode, Tree as PhyloTree};
 
-#[cfg(not(target_os = "windows"))]
 pub mod cairo_renderer;
 pub mod layout;
 pub mod painter;
