@@ -29,6 +29,19 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Add Windows GNU target
+        if: matrix.target.name == 'windows'
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - name: Setup MSYS2 (MinGW)
+        if: matrix.target.name == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
@@ -52,9 +65,11 @@ jobs:
         if: matrix.target.name == 'windows'
         shell: pwsh
         run: |
-          cargo build --release
+          $ErrorActionPreference = "Stop"
+          cargo build --release --target x86_64-pc-windows-gnu
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/rhaeTree.exe dist/rhaeTree.exe
+          Copy-Item target/x86_64-pc-windows-gnu/release/rhaeTree.exe dist/rhaeTree.exe
           Compress-Archive -Path dist/rhaeTree.exe -DestinationPath dist/rhaeTree-windows.zip -Force
 
       - name: Upload macOS artifact
