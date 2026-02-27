@@ -13,6 +13,7 @@ Options:
   --bundle-id ID          CFBundleIdentifier (default: com.yourorg.rhaetree)
   --version VER           CFBundleVersion/CFBundleShortVersionString (default: 1.0.0)
   --app-name NAME         App bundle name and executable name (default: rhaeTree)
+  --binary-path PATH      Use an existing binary instead of running cargo build
   --output-dir DIR        Output directory for .app (default: <repo>/dist)
   --icon-png PATH         PNG source for icon generation (default: <repo>/icon/icon_1024x1024.png)
   --min-macos VER         LSMinimumSystemVersion (default: 12.0)
@@ -37,6 +38,7 @@ BUNDLE_ID="com.yourorg.rhaetree"
 APP_VERSION="1.0.0"
 APP_NAME="rhaeTree"
 OUTPUT_DIR="${ROOT_DIR}/dist"
+BIN_PATH=""
 if [[ -f "${ROOT_DIR}/icon/icon_1024x1024.png" ]]; then
   ICON_PNG="${ROOT_DIR}/icon/icon_1024x1024.png"
 else
@@ -60,6 +62,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --app-name)
       APP_NAME="$2"
+      shift 2
+      ;;
+    --binary-path)
+      BIN_PATH="$2"
       shift 2
       ;;
     --output-dir)
@@ -86,7 +92,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-BIN_PATH="${ROOT_DIR}/target/${PROFILE}/${APP_NAME}"
+if [[ -z "${BIN_PATH}" ]]; then
+  BIN_PATH="${ROOT_DIR}/target/${PROFILE}/${APP_NAME}"
+fi
 APP_BUNDLE="${OUTPUT_DIR}/${APP_NAME}.app"
 CONTENTS_DIR="${APP_BUNDLE}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
@@ -97,11 +105,15 @@ ICON_ICNS_PATH="${RESOURCES_DIR}/${ICON_BASENAME}.icns"
 ICONSET_PATH="${ROOT_DIR}/icon/${ICON_BASENAME}.iconset"
 UTI_ID="${BUNDLE_ID}.tree"
 
-echo "Building ${APP_NAME} (${PROFILE})..."
-if [[ "${PROFILE}" == "release" ]]; then
-  cargo build --release
+if [[ -z "${BIN_PATH:-}" || "${BIN_PATH}" == "${ROOT_DIR}/target/${PROFILE}/${APP_NAME}" ]]; then
+  echo "Building ${APP_NAME} (${PROFILE})..."
+  if [[ "${PROFILE}" == "release" ]]; then
+    cargo build --release
+  else
+    cargo build
+  fi
 else
-  cargo build
+  echo "Using existing binary: ${BIN_PATH}"
 fi
 
 if [[ ! -f "${BIN_PATH}" ]]; then
