@@ -17,6 +17,7 @@ Options:
   --output-dir DIR        Output directory for .app (default: <repo>/dist)
   --icon-png PATH         PNG source for icon generation (default: <repo>/icon/icon_1024x1024.png)
   --min-macos VER         LSMinimumSystemVersion (default: 12.0)
+  --codesign-identity ID  Code signing identity (default: - for ad-hoc signing)
   -h, --help              Show this help
 
 Examples:
@@ -45,6 +46,7 @@ else
   ICON_PNG="${ROOT_DIR}/icon/icon.png"
 fi
 MIN_MACOS="12.0"
+CODESIGN_IDENTITY="-"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -78,6 +80,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --min-macos)
       MIN_MACOS="$2"
+      shift 2
+      ;;
+    --codesign-identity)
+      CODESIGN_IDENTITY="$2"
       shift 2
       ;;
     -h|--help)
@@ -131,7 +137,7 @@ chmod +x "${MACOS_DIR}/${APP_NAME}"
 bundle_homebrew_dylibs() {
   local app_binary="$1"
   local -a queue=("${app_binary}")
-  local -a processed=()
+  local processed="|"
   local dep
   local file
   local src
@@ -143,17 +149,10 @@ bundle_homebrew_dylibs() {
     file="${queue[0]}"
     queue=("${queue[@]:1}")
 
-    local seen=false
-    for p in "${processed[@]-}"; do
-      if [[ "${p}" == "${file}" ]]; then
-        seen=true
-        break
-      fi
-    done
-    if [[ "${seen}" == true ]]; then
+    if [[ "${processed}" == *"|${file}|"* ]]; then
       continue
     fi
-    processed+=("${file}")
+    processed="${processed}${file}|"
 
     while IFS= read -r dep; do
       if [[ "${dep}" != /opt/homebrew/* && "${dep}" != /usr/local/* ]]; then
@@ -276,6 +275,17 @@ if [[ -f "${ICON_PNG}" ]] && command -v sips >/dev/null 2>&1; then
   fi
 else
   echo "Icon tools or source icon missing; skipping .icns generation."
+fi
+
+if command -v codesign >/dev/null 2>&1; then
+  echo "Signing app bundle with identity: ${CODESIGN_IDENTITY}"
+  if [[ -d "${FRAMEWORKS_DIR}" ]]; then
+    find "${FRAMEWORKS_DIR}" -type f -name "*.dylib" -print0 | while IFS= read -r -d '' lib; do
+      codesign --force --sign "${CODESIGN_IDENTITY}" "$lib"
+    done
+  fi
+  codesign --force --sign "${CODESIGN_IDENTITY}" "${MACOS_DIR}/${APP_NAME}"
+  codesign --force --sign "${CODESIGN_IDENTITY}" "${APP_BUNDLE}"
 fi
 
 echo "Done."
