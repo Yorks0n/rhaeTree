@@ -144,7 +144,7 @@ bundle_homebrew_dylibs() {
     queue=("${queue[@]:1}")
 
     local seen=false
-    for p in "${processed[@]}"; do
+    for p in "${processed[@]-}"; do
       if [[ "${p}" == "${file}" ]]; then
         seen=true
         break
