@@ -135,18 +135,25 @@ jobs:
           export PKG_CONFIG_ALLOW_CROSS=1
           cargo build --release --target x86_64-pc-windows-gnu
           mkdir -p dist
-          cp target/x86_64-pc-windows-gnu/release/rhaeTree.exe dist/rhaeTree.exe
-          cp /mingw64/bin/libcairo-2.dll dist/
-          cp /mingw64/bin/libglib-2.0-0.dll dist/
-          cp /mingw64/bin/libgobject-2.0-0.dll dist/
-          cp /mingw64/bin/libgio-2.0-0.dll dist/
-          cp /mingw64/bin/libintl-8.dll dist/
-          cp /mingw64/bin/libiconv-2.dll dist/
-          cp /mingw64/bin/libpng16-16.dll dist/
-          cp /mingw64/bin/libfreetype-6.dll dist/
-          cp /mingw64/bin/libfontconfig-1.dll dist/
-          cp /mingw64/bin/libpixman-1-0.dll dist/
-          cp /mingw64/bin/zlib1.dll dist/
+          exe="target/x86_64-pc-windows-gnu/release/rhaeTree.exe"
+          cp "${exe}" dist/rhaeTree.exe
+          queue=("${exe}")
+          copied="|"
+          while ((${#queue[@]})); do
+            file="${queue[0]}"
+            queue=("${queue[@]:1}")
+            while IFS= read -r dep; do
+              [[ -z "${dep}" ]] && continue
+              base="$(basename "${dep}")"
+              if [[ "${copied}" == *"|${base}|"* ]]; then
+                continue
+              fi
+              copied="${copied}${base}|"
+              cp "${dep}" "dist/${base}"
+              queue+=("${dep}")
+            done < <(ldd "${file}" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i ~ /^\/mingw64\/bin\/.*\.dll$/) print $i}')
+          done
+          ls -1 dist
           powershell -Command "Compress-Archive -Path dist/* -DestinationPath dist/${{ matrix.target.artifact }} -Force"
 
       - name: Upload macOS artifact
