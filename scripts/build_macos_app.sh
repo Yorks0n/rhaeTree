@@ -99,6 +99,7 @@ APP_BUNDLE="${OUTPUT_DIR}/${APP_NAME}.app"
 CONTENTS_DIR="${APP_BUNDLE}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+FRAMEWORKS_DIR="${CONTENTS_DIR}/Frameworks"
 PLIST_PATH="${CONTENTS_DIR}/Info.plist"
 ICON_BASENAME="rhaetree"
 ICON_ICNS_PATH="${RESOURCES_DIR}/${ICON_BASENAME}.icns"
@@ -123,9 +124,68 @@ fi
 
 echo "Creating bundle: ${APP_BUNDLE}"
 rm -rf "${APP_BUNDLE}"
-mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
+mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${FRAMEWORKS_DIR}"
 cp "${BIN_PATH}" "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
+
+bundle_homebrew_dylibs() {
+  local app_binary="$1"
+  local -a queue=("${app_binary}")
+  local -a processed=()
+  local dep
+  local file
+  local src
+  local base
+  local dst
+  local new_ref
+
+  while ((${#queue[@]})); do
+    file="${queue[0]}"
+    queue=("${queue[@]:1}")
+
+    local seen=false
+    for p in "${processed[@]}"; do
+      if [[ "${p}" == "${file}" ]]; then
+        seen=true
+        break
+      fi
+    done
+    if [[ "${seen}" == true ]]; then
+      continue
+    fi
+    processed+=("${file}")
+
+    while IFS= read -r dep; do
+      if [[ "${dep}" != /opt/homebrew/* && "${dep}" != /usr/local/* ]]; then
+        continue
+      fi
+      if [[ "${dep}" != *.dylib ]]; then
+        continue
+      fi
+      if [[ ! -f "${dep}" ]]; then
+        echo "Warning: dependent dylib not found: ${dep}"
+        continue
+      fi
+
+      src="${dep}"
+      base="$(basename "${src}")"
+      dst="${FRAMEWORKS_DIR}/${base}"
+      new_ref="@executable_path/../Frameworks/${base}"
+
+      if [[ ! -f "${dst}" ]]; then
+        cp "${src}" "${dst}"
+        chmod 755 "${dst}"
+        install_name_tool -id "${new_ref}" "${dst}"
+        queue+=("${dst}")
+      fi
+
+      install_name_tool -change "${src}" "${new_ref}" "${file}"
+    done < <(otool -L "${file}" | tail -n +2 | awk '{print $1}')
+  done
+}
+
+echo "Bundling Homebrew dynamic libraries..."
+bundle_homebrew_dylibs "${MACOS_DIR}/${APP_NAME}"
 
 echo "Writing Info.plist..."
 cat > "${PLIST_PATH}" <<EOF

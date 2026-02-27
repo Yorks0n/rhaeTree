@@ -18,13 +18,8 @@ jobs:
       matrix:
         target:
           - name: macos-arm64
-            os: macos-14
-            rust_target: aarch64-apple-darwin
-            artifact: rhaeTree-macos-arm64.zip
-          - name: macos-x86_64
-            os: macos-13
-            rust_target: x86_64-apple-darwin
-            artifact: rhaeTree-macos-x86_64.zip
+            os: macos-latest
+            artifact: rhaeTree-macos.zip
           - name: windows
             os: windows-latest
             rust_target: x86_64-pc-windows-gnu
@@ -103,14 +98,19 @@ jobs:
           else
             APP_VERSION="1.0.0"
           fi
-          cargo build --release --target "${{ matrix.target.rust_target }}"
+          cargo build --release
           mkdir -p dist
-          cp "target/${{ matrix.target.rust_target }}/release/rhaeTree" dist/rhaeTree
+          cp target/release/rhaeTree dist/rhaeTree
           bash scripts/build_macos_app.sh \
             --bundle-id com.yorkson.rhaetree \
             --version "${APP_VERSION}" \
             --app-name rhaeTree \
             --binary-path dist/rhaeTree
+          if [[ -d dist/rhaeTree.app/Contents/Frameworks ]]; then
+            find dist/rhaeTree.app/Contents/Frameworks -type f -name "*.dylib" -print0 | while IFS= read -r -d '' lib; do
+              codesign --force --sign "${MACOS_SIGNING_IDENTITY}" --options runtime --timestamp "$lib"
+            done
+          fi
           codesign --force --sign "${MACOS_SIGNING_IDENTITY}" --options runtime --timestamp dist/rhaeTree.app/Contents/MacOS/rhaeTree
           codesign --force --sign "${MACOS_SIGNING_IDENTITY}" --options runtime --timestamp dist/rhaeTree.app
           codesign --verify --strict --verbose=2 dist/rhaeTree.app
@@ -129,7 +129,10 @@ jobs:
         if: matrix.target.name == 'windows'
         shell: msys2 {0}
         run: |
+          export PATH="/c/Users/runneradmin/.cargo/bin:$PATH"
           export PKG_CONFIG=/mingw64/bin/pkg-config
+          export PKG_CONFIG_PATH=/mingw64/lib/pkgconfig:/mingw64/share/pkgconfig
+          export PKG_CONFIG_ALLOW_CROSS=1
           cargo build --release --target x86_64-pc-windows-gnu
           mkdir -p dist
           cp target/x86_64-pc-windows-gnu/release/rhaeTree.exe dist/rhaeTree.exe
@@ -150,7 +153,7 @@ jobs:
         if: startsWith(matrix.target.name, 'macos-')
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target.name }}
+          name: rhaeTree-macos
           path: dist/${{ matrix.target.artifact }}
           if-no-files-found: error
 
@@ -177,6 +180,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/macos-arm64/rhaeTree-macos-arm64.zip
-            artifacts/macos-x86_64/rhaeTree-macos-x86_64.zip
+            artifacts/rhaeTree-macos/rhaeTree-macos.zip
             artifacts/rhaeTree-windows/rhaeTree-windows.zip
