@@ -17,10 +17,18 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - name: macos
-            os: macos-latest
+          - name: macos-arm64
+            os: macos-14
+            rust_target: aarch64-apple-darwin
+            artifact: rhaeTree-macos-arm64.zip
+          - name: macos-x86_64
+            os: macos-13
+            rust_target: x86_64-apple-darwin
+            artifact: rhaeTree-macos-x86_64.zip
           - name: windows
             os: windows-latest
+            rust_target: x86_64-pc-windows-gnu
+            artifact: rhaeTree-windows.zip
 
     steps:
       - name: Checkout
@@ -28,10 +36,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Add macOS targets
-        if: matrix.target.name == 'macos'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Add Windows GNU target
         if: matrix.target.name == 'windows'
@@ -46,12 +50,15 @@ jobs:
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-cairo
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Import macOS signing certificate
-        if: matrix.target.name == 'macos'
+        if: startsWith(matrix.target.name, 'macos-')
         env:
           MACOS_CERT_P12_B64: ${{ secrets.MACOS_CERT_P12_B64 }}
           MACOS_CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
@@ -86,7 +93,7 @@ jobs:
           security find-identity -v -p codesigning "${KEYCHAIN_PATH}"
 
       - name: Build macOS app bundle
-        if: matrix.target.name == 'macos'
+        if: startsWith(matrix.target.name, 'macos-')
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
@@ -96,13 +103,9 @@ jobs:
           else
             APP_VERSION="1.0.0"
           fi
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target "${{ matrix.target.rust_target }}"
           mkdir -p dist
-          lipo -create \
-            target/aarch64-apple-darwin/release/rhaeTree \
-            target/x86_64-apple-darwin/release/rhaeTree \
-            -output dist/rhaeTree
+          cp "target/${{ matrix.target.rust_target }}/release/rhaeTree" dist/rhaeTree
           bash scripts/build_macos_app.sh \
             --bundle-id com.yorkson.rhaetree \
             --version "${APP_VERSION}" \
@@ -112,10 +115,10 @@ jobs:
           codesign --force --sign "${MACOS_SIGNING_IDENTITY}" --options runtime --timestamp dist/rhaeTree.app
           codesign --verify --strict --verbose=2 dist/rhaeTree.app
           cd dist
-          ditto -c -k --sequesterRsrc --keepParent rhaeTree.app rhaeTree-macos.zip
+          ditto -c -k --sequesterRsrc --keepParent rhaeTree.app "${{ matrix.target.artifact }}"
 
       - name: Clean up macOS signing keychain
-        if: always() && matrix.target.name == 'macos'
+        if: always() && startsWith(matrix.target.name, 'macos-')
         run: |
           KEYCHAIN_PATH="${RUNNER_TEMP}/app-signing.keychain-db"
           if [[ -f "${KEYCHAIN_PATH}" ]]; then
@@ -124,21 +127,31 @@ jobs:
 
       - name: Build Windows executable
         if: matrix.target.name == 'windows'
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          $ErrorActionPreference = "Stop"
+          export PKG_CONFIG=/mingw64/bin/pkg-config
           cargo build --release --target x86_64-pc-windows-gnu
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/x86_64-pc-windows-gnu/release/rhaeTree.exe dist/rhaeTree.exe
-          Compress-Archive -Path dist/rhaeTree.exe -DestinationPath dist/rhaeTree-windows.zip -Force
+          mkdir -p dist
+          cp target/x86_64-pc-windows-gnu/release/rhaeTree.exe dist/rhaeTree.exe
+          cp /mingw64/bin/libcairo-2.dll dist/
+          cp /mingw64/bin/libglib-2.0-0.dll dist/
+          cp /mingw64/bin/libgobject-2.0-0.dll dist/
+          cp /mingw64/bin/libgio-2.0-0.dll dist/
+          cp /mingw64/bin/libintl-8.dll dist/
+          cp /mingw64/bin/libiconv-2.dll dist/
+          cp /mingw64/bin/libpng16-16.dll dist/
+          cp /mingw64/bin/libfreetype-6.dll dist/
+          cp /mingw64/bin/libfontconfig-1.dll dist/
+          cp /mingw64/bin/libpixman-1-0.dll dist/
+          cp /mingw64/bin/zlib1.dll dist/
+          powershell -Command "Compress-Archive -Path dist/* -DestinationPath dist/${{ matrix.target.artifact }} -Force"
 
       - name: Upload macOS artifact
-        if: matrix.target.name == 'macos'
+        if: startsWith(matrix.target.name, 'macos-')
         uses: actions/upload-artifact@v4
         with:
-          name: rhaeTree-macos
-          path: dist/rhaeTree-macos.zip
+          name: ${{ matrix.target.name }}
+          path: dist/${{ matrix.target.artifact }}
           if-no-files-found: error
 
       - name: Upload Windows artifact
@@ -146,7 +159,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rhaeTree-windows
-          path: dist/rhaeTree-windows.zip
+          path: dist/${{ matrix.target.artifact }}
           if-no-files-found: error
 
   release:
@@ -164,5 +177,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/rhaeTree-macos/rhaeTree-macos.zip
+            artifacts/macos-arm64/rhaeTree-macos-arm64.zip
+            artifacts/macos-x86_64/rhaeTree-macos-x86_64.zip
             artifacts/rhaeTree-windows/rhaeTree-windows.zip
