@@ -1075,19 +1075,14 @@ where
 {
     let child = to_screen(layout.positions[node.id]);
 
-    // 1) Prefer terminal segment direction from continuous branch geometry.
-    if let Some(branch) = layout
-        .continuous_branches
-        .iter()
-        .find(|b| b.child == node.id)
-    {
-        if branch.points.len() >= 2 {
-            for world_p in branch.points.iter().skip(1) {
-                let p = to_screen(*world_p);
-                if let Some(angle) = angle_if_non_degenerate(child.x - p.x, child.y - p.y) {
-                    return angle;
-                }
-            }
+    // 1) Root→leaf direction: root sits at radius≈0 (tree center) in circular layout,
+    //    so this gives the exact radial outward direction and is maximally numerically
+    //    stable (vector length = full leaf radius). No dependency on branch.points
+    //    coordinate consistency.
+    if let Some(root_id) = tree.root {
+        let root = to_screen(layout.positions[root_id]);
+        if let Some(angle) = angle_if_non_degenerate(child.x - root.x, child.y - root.y) {
+            return angle;
         }
     }
 

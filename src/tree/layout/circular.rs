@@ -14,8 +14,13 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
         ..
     } = data;
 
-    // 计算角度范围（类似Java中的angularRange）
-    let angular_range = std::f32::consts::TAU * 0.9; // 留10%空白
+    // 计算角度范围：gap = 1个叶节点槽位，随树的大小自动收缩
+    // N个叶节点时：range = TAU * (N-1)/N，gap = TAU/N（与相邻叶间距相同）
+    let angular_range = if tip_count >= 2 {
+        std::f32::consts::TAU * (tip_count - 1) as f32 / tip_count as f32
+    } else {
+        std::f32::consts::TAU * 0.9
+    };
     let start_angle = std::f32::consts::PI; // 起始角度（顶部）
 
     // 转换矩形坐标到极坐标
