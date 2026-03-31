@@ -29,6 +29,8 @@ cairo-rs = { version = "0.20", features = ["pdf"] }
 objc2 = "0.5.2"
 objc2-app-kit = "0.2.2"
 objc2-foundation = "0.2.2"
+# Enable Metal backend for eframe's wgpu renderer on macOS.
+wgpu = { version = "27", features = ["metal"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
