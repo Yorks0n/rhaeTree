@@ -17,8 +17,11 @@ use crate::tree::painter::{
     BranchLabelDisplay, NodeLabelDisplay, ShapeColorMode, ShapeSizeMode, ShapeType,
     TipLabelDisplay, TipLabelFontFamily, TipLabelNumberFormat,
 };
-use crate::tree::scene_graph::SceneLayer;
+use crate::tree::scene_graph::{build_tree_scene, SceneLayer};
 use crate::tree::skia_renderer::SkiaTreeRenderer;
+
+mod render_worker;
+use render_worker::{RenderJob, RenderWorker};
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
 use crate::tree::{NodeId, Tree, TreeBundle, TreeFileFormat};
 use crate::ui;
@@ -88,6 +91,12 @@ pub struct FigTreeGui {
     recent_colors: Vec<Color32>,
     undo_stack: Vec<EditState>,
     redo_stack: Vec<EditState>,
+    render_worker: RenderWorker,
+    pending_job_id: Option<u64>,
+    pending_base_sig: Option<u64>,
+    pending_decor_sig: Option<u64>,
+    next_job_id: u64,
+    is_live_adjusting: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -562,7 +571,7 @@ fn parse_tip_label_number_format(s: &str) -> Option<TipLabelNumberFormat> {
 
 impl FigTreeGui {
     const MAX_RENDER_TEXTURE_EDGE: f32 = 8192.0;
-    const MAX_RENDER_PIXELS: f32 = 16_000_000.0;
+    const MAX_RENDER_PIXELS: f32 = 8_000_000.0;
     const MAX_UNDO_STEPS: usize = 5;
 
     pub fn new(_cc: &eframe::CreationContext<'_>, config: AppConfig) -> Self {
@@ -642,6 +651,12 @@ impl FigTreeGui {
             recent_colors: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            render_worker: RenderWorker::new(_cc.egui_ctx.clone()),
+            pending_job_id: None,
+            pending_base_sig: None,
+            pending_decor_sig: None,
+            next_job_id: 0,
+            is_live_adjusting: false,
         };
 
         if let Some(path) = app.config.tree_path.clone() {
@@ -2425,6 +2440,7 @@ impl FigTreeGui {
         canvas_width.to_bits().hash(h);
         canvas_height.to_bits().hash(h);
         self.pixels_per_point.to_bits().hash(h);
+        self.is_live_adjusting.hash(h);
     }
 
     fn base_render_signature(
@@ -2660,7 +2676,13 @@ impl FigTreeGui {
             1.0
         };
 
-        edge_scale.min(area_scale).clamp(0.1, 1.0)
+        let base = edge_scale.min(area_scale).clamp(0.1, 1.0);
+        // Decision 3A: halve resolution during live slider adjustment for faster preview.
+        if self.is_live_adjusting {
+            (base * 0.5).clamp(0.1, 1.0)
+        } else {
+            base
+        }
     }
 
     fn draw_tree_canvas(&mut self, ui: &mut egui::Ui) {
@@ -2725,6 +2747,41 @@ impl FigTreeGui {
             let interaction_signature =
                 self.interaction_render_signature(tree_ref, canvas_width, canvas_height);
 
+            // ── Poll background worker for completed base+decor result ──────────────
+            if let Some(result) = self.render_worker.try_recv() {
+                if Some(result.job_id) == self.pending_job_id {
+                    // Apply base layer
+                    if let Some(texture) = self.base_tree_texture.as_mut() {
+                        texture.set(result.base.image, egui::TextureOptions::LINEAR);
+                    } else {
+                        self.base_tree_texture = Some(ui.ctx().load_texture(
+                            "tree_canvas_base",
+                            result.base.image,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                    self.base_render_signature = self.pending_base_sig;
+
+                    // Apply decor layer
+                    if let Some(texture) = self.decor_tree_texture.as_mut() {
+                        texture.set(result.decor.image, egui::TextureOptions::LINEAR);
+                    } else {
+                        self.decor_tree_texture = Some(ui.ctx().load_texture(
+                            "tree_canvas_decor",
+                            result.decor.image,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                    self.cached_tip_label_hits_local = result.decor.tip_label_hits;
+                    self.decor_render_signature = self.pending_decor_sig;
+
+                    self.pending_job_id = None;
+                    self.pending_base_sig = None;
+                    self.pending_decor_sig = None;
+                }
+                // Stale results (different job_id) are silently dropped.
+            }
+
             let needs_base = self.base_tree_texture.is_none()
                 || self.base_render_signature != Some(base_signature);
             let needs_decor = self.decor_tree_texture.is_none()
@@ -2732,122 +2789,125 @@ impl FigTreeGui {
             let needs_interaction = self.interaction_tree_texture.is_none()
                 || self.interaction_render_signature != Some(interaction_signature);
 
-            if needs_base || needs_decor || needs_interaction {
-                if let Some((tree, layout)) = self.build_display_tree_layout() {
+            // ── Dispatch background job for base+decor if signatures changed ────────
+            let already_dispatched = self.pending_base_sig == Some(base_signature)
+                && self.pending_decor_sig == Some(decor_signature);
+
+            if (needs_base || needs_decor) && !already_dispatched {
+                if self.render_worker.worker_dead {
+                    self.last_error =
+                        Some("Renderer crashed. Please restart the application.".to_string());
+                } else if let Some((tree, layout)) = self.build_display_tree_layout() {
                     let selected_nodes = self.tree_viewer.selected_nodes().clone();
                     let selected_tips = self.tree_viewer.selected_tips().clone();
+                    let scale = self.render_resolution_scale(canvas_width, canvas_height);
+                    let ppp = self.pixels_per_point;
 
-                    if needs_base {
-                        match self.render_with_current_backend(
-                            &tree,
-                            &layout,
-                            rect,
-                            inner,
-                            &selected_nodes,
-                            &selected_tips,
-                            canvas_width,
-                            canvas_height,
-                            SceneLayer::Base,
-                        ) {
-                            Ok(output) => {
-                                if let Some(texture) = self.base_tree_texture.as_mut() {
-                                    texture.set(output.image, egui::TextureOptions::LINEAR);
-                                } else {
-                                    self.base_tree_texture = Some(ui.ctx().load_texture(
-                                        "tree_canvas_base",
-                                        output.image,
-                                        egui::TextureOptions::LINEAR,
-                                    ));
-                                }
-                                self.base_render_signature = Some(base_signature);
-                            }
-                            Err(err) => {
-                                self.last_error = Some(format!("Base layer render failed: {err}"));
-                                self.base_render_signature = None;
-                            }
-                        }
-                    }
+                    let base_scene = build_tree_scene(
+                        &tree,
+                        &layout,
+                        &self.tree_painter,
+                        &selected_nodes,
+                        &selected_tips,
+                        rect,
+                        inner,
+                        inner,
+                        1.0,
+                        Some(self.tree_viewer.selection_mode()),
+                        SceneLayer::Base,
+                    );
+                    let decor_scene = build_tree_scene(
+                        &tree,
+                        &layout,
+                        &self.tree_painter,
+                        &selected_nodes,
+                        &selected_tips,
+                        rect,
+                        inner,
+                        inner,
+                        1.0,
+                        Some(self.tree_viewer.selection_mode()),
+                        SceneLayer::Decor,
+                    );
 
-                    if needs_decor {
-                        match self.render_with_current_backend(
-                            &tree,
-                            &layout,
-                            rect,
-                            inner,
-                            &selected_nodes,
-                            &selected_tips,
-                            canvas_width,
-                            canvas_height,
-                            SceneLayer::Decor,
-                        ) {
-                            Ok(output) => {
-                                if let Some(texture) = self.decor_tree_texture.as_mut() {
-                                    texture.set(output.image, egui::TextureOptions::LINEAR);
-                                } else {
-                                    self.decor_tree_texture = Some(ui.ctx().load_texture(
-                                        "tree_canvas_decor",
-                                        output.image,
-                                        egui::TextureOptions::LINEAR,
-                                    ));
-                                }
-                                self.cached_tip_label_hits_local = output.tip_label_hits;
-                                self.decor_render_signature = Some(decor_signature);
-                            }
-                            Err(err) => {
-                                self.last_error = Some(format!("Decor layer render failed: {err}"));
-                                self.decor_render_signature = None;
-                                self.cached_tip_label_hits_local.clear();
-                            }
-                        }
-                    }
+                    let job_id = self.next_job_id;
+                    self.next_job_id += 1;
 
-                    if needs_interaction {
-                        match self.render_with_current_backend(
-                            &tree,
-                            &layout,
-                            rect,
-                            inner,
-                            &selected_nodes,
-                            &selected_tips,
-                            canvas_width,
-                            canvas_height,
-                            SceneLayer::Interaction,
-                        ) {
-                            Ok(output) => {
-                                if let Some(texture) = self.interaction_tree_texture.as_mut() {
-                                    texture.set(output.image, egui::TextureOptions::LINEAR);
-                                } else {
-                                    self.interaction_tree_texture = Some(ui.ctx().load_texture(
-                                        "tree_canvas_interaction",
-                                        output.image,
-                                        egui::TextureOptions::LINEAR,
-                                    ));
-                                }
-                                self.interaction_render_signature = Some(interaction_signature);
-                            }
-                            Err(err) => {
-                                self.last_error =
-                                    Some(format!("Interaction layer render failed: {err}"));
-                                self.interaction_render_signature = None;
-                            }
-                        }
-                    }
+                    self.render_worker.try_send(RenderJob {
+                        base: base_scene,
+                        decor: decor_scene,
+                        ppp,
+                        scale,
+                        job_id,
+                    });
+                    self.pending_job_id = Some(job_id);
+                    self.pending_base_sig = Some(base_signature);
+                    self.pending_decor_sig = Some(decor_signature);
                 } else {
                     ui.label("Tree structure unavailable for rendering.");
                     return;
                 }
             }
 
+            // ── Render interaction layer synchronously (fast: selection only) ───────
+            if needs_interaction {
+                if let Some((tree, layout)) = self.build_display_tree_layout() {
+                    let selected_nodes = self.tree_viewer.selected_nodes().clone();
+                    let selected_tips = self.tree_viewer.selected_tips().clone();
+                    match self.render_with_current_backend(
+                        &tree,
+                        &layout,
+                        rect,
+                        inner,
+                        &selected_nodes,
+                        &selected_tips,
+                        canvas_width,
+                        canvas_height,
+                        SceneLayer::Interaction,
+                    ) {
+                        Ok(output) => {
+                            if let Some(texture) = self.interaction_tree_texture.as_mut() {
+                                texture.set(output.image, egui::TextureOptions::LINEAR);
+                            } else {
+                                self.interaction_tree_texture = Some(ui.ctx().load_texture(
+                                    "tree_canvas_interaction",
+                                    output.image,
+                                    egui::TextureOptions::LINEAR,
+                                ));
+                            }
+                            self.interaction_render_signature = Some(interaction_signature);
+                        }
+                        Err(err) => {
+                            self.last_error =
+                                Some(format!("Interaction layer render failed: {err}"));
+                            self.interaction_render_signature = None;
+                        }
+                    }
+                }
+            }
+
+            // ── Draw textures (or "Rendering..." placeholder) ────────────────────────
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            for texture in [
-                self.base_tree_texture.as_ref(),
-                self.decor_tree_texture.as_ref(),
-                self.interaction_tree_texture.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
+            if self.base_tree_texture.is_none() && self.pending_job_id.is_some() {
+                // Decision 2A: first load — no texture yet, job in flight.
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Rendering...",
+                    egui::FontId::proportional(16.0),
+                    egui::Color32::GRAY,
+                );
+            } else {
+                for texture in [
+                    self.base_tree_texture.as_ref(),
+                    self.decor_tree_texture.as_ref(),
+                    self.interaction_tree_texture.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
+                }
             }
 
             let tip_label_hits: Vec<_> = self
@@ -3001,6 +3061,9 @@ impl FigTreeGui {
 impl eframe::App for FigTreeGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.consume_system_open_requests(ctx);
+
+        // Reset live-adjusting flag each frame; sliders set it below.
+        self.is_live_adjusting = false;
 
         // Store pixels_per_point for export
         self.pixels_per_point = ctx.pixels_per_point();
@@ -4299,16 +4362,18 @@ impl eframe::App for FigTreeGui {
                                 | crate::tree::layout::TreeLayoutType::Slanted
                         ) {
                             ui.label("Zoom:");
-                            ui.add(
+                            let zoom_resp = ui.add(
                                 egui::Slider::new(&mut self.tree_viewer.zoom, 1.0..=5.0)
                                     .show_value(false),
                             );
+                            self.is_live_adjusting |= zoom_resp.dragged();
 
                             ui.label("Expansion:");
-                            ui.add(
+                            let exp_resp = ui.add(
                                 egui::Slider::new(&mut self.tree_viewer.vertical_expansion, 1.0..=5.0)
                                     .show_value(false),
                             );
+                            self.is_live_adjusting |= exp_resp.dragged();
                         }
 
                         // Align Tip Labels checkbox - only show for Rectangular, Circular, Slanted
