@@ -107,9 +107,6 @@ impl FigTreeApp {
             return Self::run_headless(config);
         }
 
-        // Touch wgpu so Metal/GL backends are linked even without explicit usage elsewhere.
-        // let _ = wgpu::Backends::all();
-
         let mut native_options = NativeOptions::default();
         info!(
             "Launching egui window ({}x{}).",

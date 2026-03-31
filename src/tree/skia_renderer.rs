@@ -33,9 +33,11 @@ impl Default for SkiaTreeRenderer {
 
 impl SkiaTreeRenderer {
     pub fn new() -> Self {
-        Self {
-            text_font: load_system_sans_font(),
+        let text_font = load_system_sans_font();
+        if text_font.is_none() {
+            log::warn!("SkiaTreeRenderer: failed to load system sans-serif font — text labels will not render");
         }
+        Self { text_font }
     }
 
     #[allow(clippy::too_many_arguments)]

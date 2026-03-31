@@ -19,7 +19,6 @@ use crate::tree::painter::{
 };
 use crate::tree::scene_graph::SceneLayer;
 use crate::tree::skia_renderer::SkiaTreeRenderer;
-use crate::tree::vello_renderer::VelloTreeRenderer;
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
 use crate::tree::{NodeId, Tree, TreeBundle, TreeFileFormat};
 use crate::ui;
@@ -78,9 +77,7 @@ pub struct FigTreeGui {
     decor_render_signature: Option<u64>,
     interaction_render_signature: Option<u64>,
     cached_tip_label_hits_local: Vec<crate::tree::painter::TipLabelHit>,
-    render_backend: RenderBackend,
     skia_renderer: SkiaTreeRenderer,
-    vello_renderer: VelloTreeRenderer,
     pixels_per_point: f32,
     highlighted_clade: Option<NodeId>,
     annotate_dialog_open: bool,
@@ -241,12 +238,6 @@ impl BranchTransform {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-enum RenderBackend {
-    Skia,
-    Vello,
-}
-
 #[derive(Clone)]
 struct EditState {
     tree_viewer: TreeViewer,
@@ -259,15 +250,6 @@ struct EditState {
     node_ordering: NodeOrdering,
     transform_branches_enabled: bool,
     branch_transform: BranchTransform,
-}
-
-impl RenderBackend {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Skia => "Skia",
-            Self::Vello => "Vello",
-        }
-    }
 }
 
 impl FilterMode {
@@ -398,20 +380,6 @@ fn parse_selection_mode(s: &str) -> Option<SelectionMode> {
     }
 }
 
-fn render_backend_name(value: RenderBackend) -> &'static str {
-    match value {
-        RenderBackend::Skia => "skia",
-        RenderBackend::Vello => "vello",
-    }
-}
-
-fn parse_render_backend(s: &str) -> Option<RenderBackend> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "skia" => Some(RenderBackend::Skia),
-        "vello" => Some(RenderBackend::Vello),
-        _ => None,
-    }
-}
 
 fn root_method_name(value: RootMethod) -> &'static str {
     match value {
@@ -663,9 +631,7 @@ impl FigTreeGui {
             decor_render_signature: None,
             interaction_render_signature: None,
             cached_tip_label_hits_local: Vec::new(),
-            render_backend: RenderBackend::Vello,
             skia_renderer: SkiaTreeRenderer::new(),
-            vello_renderer: VelloTreeRenderer::new(),
             pixels_per_point: 1.0,
             highlighted_clade: None,
             annotate_dialog_open: false,
@@ -1291,11 +1257,6 @@ impl FigTreeGui {
             selection_mode_name(self.tree_viewer.selection_mode()).to_string(),
         );
         settings.insert(
-            "render.backend".to_string(),
-            render_backend_name(self.render_backend).to_string(),
-        );
-
-        settings.insert(
             "trees.rooting".to_string(),
             self.root_tree_enabled.to_string(),
         );
@@ -1644,13 +1605,6 @@ impl FigTreeGui {
         {
             self.tree_viewer.set_selection_mode(v);
         }
-        if let Some(v) = settings
-            .get("render.backend")
-            .and_then(|s| parse_render_backend(s))
-        {
-            self.render_backend = v;
-        }
-
         if let Some(v) = settings.get("trees.rooting").and_then(|s| parse_bool(s)) {
             self.root_tree_enabled = v;
         }
@@ -2215,18 +2169,16 @@ impl FigTreeGui {
                     }
                 }
 
-                let image = match self.render_backend {
-                    RenderBackend::Vello => self
-                        .vello_renderer
-                        .render_scene_to_image(&scene, 1.0, 1.0)
-                        .or_else(|_| self.skia_renderer.render_scene_to_image(&scene, 1.0, 1.0))
-                        .map(|out| out.image),
-                    RenderBackend::Skia => self
-                        .skia_renderer
-                        .render_scene_to_image(&scene, 1.0, 1.0)
-                        .or_else(|_| self.vello_renderer.render_scene_to_image(&scene, 1.0, 1.0))
-                        .map(|out| out.image),
+                let export_area = width * height;
+                let export_resolution_scale = if export_area > Self::MAX_RENDER_PIXELS {
+                    (Self::MAX_RENDER_PIXELS / export_area).sqrt()
+                } else {
+                    1.0
                 };
+                let image = self
+                    .skia_renderer
+                    .render_scene_to_image(&scene, 1.0, export_resolution_scale)
+                    .map(|out| out.image);
 
                 match image.and_then(|img| self.save_color_image_to_file(&img, path, format)) {
                     Ok(_) => {
@@ -2473,7 +2425,6 @@ impl FigTreeGui {
         canvas_width.to_bits().hash(h);
         canvas_height.to_bits().hash(h);
         self.pixels_per_point.to_bits().hash(h);
-        self.render_backend.hash(h);
     }
 
     fn base_render_signature(
@@ -2676,38 +2627,21 @@ impl FigTreeGui {
         canvas_height: f32,
         scene_layer: SceneLayer,
     ) -> Result<crate::tree::skia_renderer::SkiaRenderOutput, String> {
-        match self.render_backend {
-            RenderBackend::Skia => self.skia_renderer.render(
-                tree,
-                layout,
-                &self.tree_painter,
-                selected_nodes,
-                selected_tips,
-                rect,
-                inner,
-                inner,
-                1.0,
-                Some(self.tree_viewer.selection_mode()),
-                scene_layer,
-                self.pixels_per_point,
-                self.render_resolution_scale(canvas_width, canvas_height),
-            ),
-            RenderBackend::Vello => self.vello_renderer.render(
-                tree,
-                layout,
-                &self.tree_painter,
-                selected_nodes,
-                selected_tips,
-                rect,
-                inner,
-                inner,
-                1.0,
-                Some(self.tree_viewer.selection_mode()),
-                scene_layer,
-                self.pixels_per_point,
-                self.render_resolution_scale(canvas_width, canvas_height),
-            ),
-        }
+        self.skia_renderer.render(
+            tree,
+            layout,
+            &self.tree_painter,
+            selected_nodes,
+            selected_tips,
+            rect,
+            inner,
+            inner,
+            1.0,
+            Some(self.tree_viewer.selection_mode()),
+            scene_layer,
+            self.pixels_per_point,
+            self.render_resolution_scale(canvas_width, canvas_height),
+        )
     }
 
     fn render_resolution_scale(&self, canvas_width: f32, canvas_height: f32) -> f32 {
@@ -4561,28 +4495,6 @@ impl eframe::App for FigTreeGui {
                     .open(Some(self.panel_states.appearance_expanded))
                     .default_open(self.panel_states.appearance_expanded)
                     .show(ui, |ui| {
-                        ui.label("Renderer:");
-                        let old_backend = self.render_backend;
-                        egui::ComboBox::from_id_salt("renderer_backend")
-                            .selected_text(self.render_backend.label())
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.render_backend,
-                                    RenderBackend::Skia,
-                                    RenderBackend::Skia.label(),
-                                );
-                                ui.selectable_value(
-                                    &mut self.render_backend,
-                                    RenderBackend::Vello,
-                                    RenderBackend::Vello.label(),
-                                );
-                            });
-                        if self.render_backend != old_backend {
-                            self.invalidate_layer_caches();
-                            self.last_error = None;
-                        }
-
-                        ui.separator();
                         ui.label("Line Width:");
                         ui.add(
                             egui::Slider::new(

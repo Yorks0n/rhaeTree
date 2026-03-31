@@ -52,7 +52,7 @@ pub fn export(bundle: &TreeBundle, config: &AppConfig, output: &Path) -> Result<
         config.height
     );
     if config.export_format == ExportFormat::Pdf {
-        println!("PDF export is not implemented yet; integrate a renderer (egui, vello, etc.)");
+        println!("PDF export is not implemented yet; integrate a renderer (e.g., Cairo or Skia).");
     }
     Ok(())
 }
