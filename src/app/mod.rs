@@ -6,8 +6,6 @@ use clap::{Parser, ValueEnum};
 use eframe::{egui, NativeOptions};
 use log::{error, info, warn};
 
-#[cfg(target_os = "macos")]
-use crate::macos_file_open;
 use crate::{gui::FigTreeGui, io, ui};
 
 #[derive(Debug, Clone, Parser)]
@@ -117,8 +115,10 @@ impl FigTreeApp {
             .with_inner_size(egui::vec2(config.width as f32, config.height as f32));
 
         let initial_config = config.clone();
-        #[cfg(target_os = "macos")]
-        macos_file_open::install();
+        // Note: the macOS "Open With" delegate hook is installed inside
+        // `FigTreeGui::new`, after winit has finished setting `NSApp.delegate`.
+        // Installing it earlier is futile because winit overrides any
+        // delegate we set via `NSApplication.setDelegate:`.
 
         match eframe::run_native(
             "rhaeTree",
