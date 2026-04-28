@@ -18,6 +18,11 @@ Options:
   --icon-png PATH         PNG source for icon generation (default: <repo>/icon/icon_1024x1024.png)
   --min-macos VER         LSMinimumSystemVersion (default: 12.0)
   --codesign-identity ID  Code signing identity (default: - for ad-hoc signing)
+  --developer-id ID       Convenience alias for --codesign-identity
+                          "Developer ID Application: …". When set, --options
+                          runtime and --timestamp are added to codesign so the
+                          bundle is notarisation-ready.
+  --no-lsregister         Skip the post-build `lsregister -f` refresh.
   -h, --help              Show this help
 
 Examples:
@@ -47,6 +52,8 @@ else
 fi
 MIN_MACOS="12.0"
 CODESIGN_IDENTITY="-"
+DEVELOPER_ID=""
+RUN_LSREGISTER=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -86,6 +93,15 @@ while [[ $# -gt 0 ]]; do
       CODESIGN_IDENTITY="$2"
       shift 2
       ;;
+    --developer-id)
+      DEVELOPER_ID="$2"
+      CODESIGN_IDENTITY="$2"
+      shift 2
+      ;;
+    --no-lsregister)
+      RUN_LSREGISTER=0
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -110,7 +126,9 @@ PLIST_PATH="${CONTENTS_DIR}/Info.plist"
 ICON_BASENAME="rhaetree"
 ICON_ICNS_PATH="${RESOURCES_DIR}/${ICON_BASENAME}.icns"
 ICONSET_PATH="${ROOT_DIR}/icon/${ICON_BASENAME}.iconset"
-UTI_ID="${BUNDLE_ID}.tree"
+UTI_NEWICK="${BUNDLE_ID}.newick"
+UTI_NEXUS="${BUNDLE_ID}.nexus"
+UTI_RTR="${BUNDLE_ID}.rtr"
 
 if [[ -z "${BIN_PATH:-}" || "${BIN_PATH}" == "${ROOT_DIR}/target/${PROFILE}/${APP_NAME}" ]]; then
   echo "Building ${APP_NAME} (${PROFILE})..."
@@ -207,12 +225,30 @@ cat > "${PLIST_PATH}" <<EOF
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>
-      <key>CFBundleTypeName</key><string>Phylogenetic Tree File</string>
+      <key>CFBundleTypeName</key><string>Newick Tree</string>
       <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>${UTI_NEWICK}</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>NEXUS Tree</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>${UTI_NEXUS}</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>rhaeTree Document</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
       <key>LSHandlerRank</key><string>Owner</string>
       <key>LSItemContentTypes</key>
       <array>
-        <string>${UTI_ID}</string>
+        <string>${UTI_RTR}</string>
       </array>
     </dict>
   </array>
@@ -220,23 +256,51 @@ cat > "${PLIST_PATH}" <<EOF
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>
-      <key>UTTypeIdentifier</key><string>${UTI_ID}</string>
-      <key>UTTypeDescription</key><string>Phylogenetic Tree File</string>
+      <key>UTTypeIdentifier</key><string>${UTI_NEWICK}</string>
+      <key>UTTypeDescription</key><string>Newick Tree File</string>
       <key>UTTypeConformsTo</key>
       <array>
-        <string>public.data</string>
+        <string>public.plain-text</string>
       </array>
       <key>UTTypeTagSpecification</key>
       <dict>
         <key>public.filename-extension</key>
         <array>
+          <string>nwk</string>
+          <string>newick</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>${UTI_NEXUS}</string>
+      <key>UTTypeDescription</key><string>NEXUS Tree File</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.plain-text</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>nex</string>
+          <string>nexus</string>
           <string>tre</string>
           <string>tree</string>
           <string>trees</string>
-          <string>nex</string>
-          <string>nexus</string>
-          <string>newick</string>
-          <string>nwk</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>${UTI_RTR}</string>
+      <key>UTTypeDescription</key><string>rhaeTree Document</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.plain-text</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
           <string>rtr</string>
         </array>
       </dict>
@@ -278,14 +342,27 @@ else
 fi
 
 if command -v codesign >/dev/null 2>&1; then
+  CODESIGN_FLAGS=(--force --sign "${CODESIGN_IDENTITY}")
+  if [[ -n "${DEVELOPER_ID}" ]]; then
+    # Hardened runtime + secure timestamp are required for notarization.
+    CODESIGN_FLAGS+=(--options runtime --timestamp)
+  fi
   echo "Signing app bundle with identity: ${CODESIGN_IDENTITY}"
   if [[ -d "${FRAMEWORKS_DIR}" ]]; then
     find "${FRAMEWORKS_DIR}" -type f -name "*.dylib" -print0 | while IFS= read -r -d '' lib; do
-      codesign --force --sign "${CODESIGN_IDENTITY}" "$lib"
+      codesign "${CODESIGN_FLAGS[@]}" "$lib"
     done
   fi
-  codesign --force --sign "${CODESIGN_IDENTITY}" "${MACOS_DIR}/${APP_NAME}"
-  codesign --force --sign "${CODESIGN_IDENTITY}" "${APP_BUNDLE}"
+  codesign "${CODESIGN_FLAGS[@]}" "${MACOS_DIR}/${APP_NAME}"
+  codesign "${CODESIGN_FLAGS[@]}" "${APP_BUNDLE}"
+fi
+
+LSREGISTER_BIN="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ "${RUN_LSREGISTER}" -eq 1 && -x "${LSREGISTER_BIN}" ]]; then
+  echo "Refreshing Launch Services registration for: ${APP_BUNDLE}"
+  if ! "${LSREGISTER_BIN}" -f "${APP_BUNDLE}"; then
+    echo "Warning: lsregister -f failed; macOS may not pick up the new UTI declarations until you log out or run it manually."
+  fi
 fi
 
 echo "Done."

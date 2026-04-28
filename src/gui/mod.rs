@@ -97,6 +97,10 @@ pub struct FigTreeGui {
     pending_decor_sig: Option<u64>,
     next_job_id: u64,
     is_live_adjusting: bool,
+    /// Path queued by an external "Open With" request that we couldn't load
+    /// immediately because the current edit has unsaved changes. Cleared
+    /// when the user resolves the confirmation dialog.
+    pending_external_open: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -575,6 +579,13 @@ impl FigTreeGui {
     const MAX_UNDO_STEPS: usize = 5;
 
     pub fn new(_cc: &eframe::CreationContext<'_>, config: AppConfig) -> Self {
+        // Install the macOS NSApplicationDelegate hook now that winit has
+        // already taken ownership of `NSApp.delegate`. Subsequent
+        // `application:openURLs:` events from LaunchServices land in our
+        // `PENDING_PATHS` mailbox and are drained per-frame in
+        // `consume_system_open_requests`. No-op on non-macOS.
+        crate::macos_file_open::install_runtime_hook();
+
         let mut app = Self {
             config,
             bundle: None,
@@ -657,6 +668,7 @@ impl FigTreeGui {
             pending_decor_sig: None,
             next_job_id: 0,
             is_live_adjusting: false,
+            pending_external_open: None,
         };
 
         if let Some(path) = app.config.tree_path.clone() {
@@ -680,14 +692,41 @@ impl FigTreeGui {
     where
         I: IntoIterator<Item = PathBuf>,
     {
-        for path in paths {
-            if let Err(err) = self.load_from_path(path.clone()) {
-                error!("Failed to load {}: {}", path.display(), err);
-                self.last_error = Some(err);
-                continue;
-            }
-            break;
+        let paths: Vec<PathBuf> = paths.into_iter().collect();
+        if paths.is_empty() {
+            return;
         }
+        let extra = paths.len().saturating_sub(1);
+        let first = paths.into_iter().next().expect("non-empty");
+        if extra > 0 {
+            info!(
+                "rhaeTree is single-window; ignored {} additional file(s) from system open request",
+                extra
+            );
+            self.status = format!(
+                "Opened first of {} files; ignored the rest (rhaeTree is single-window).",
+                extra + 1
+            );
+        }
+        if self.has_unsaved_edits() && self.config.tree_path.as_ref() != Some(&first) {
+            info!(
+                "Deferring external open for {} until user resolves unsaved-changes prompt",
+                first.display()
+            );
+            self.pending_external_open = Some(first);
+            return;
+        }
+        if let Err(err) = self.load_from_path(first.clone()) {
+            error!("Failed to load {}: {}", first.display(), err);
+            self.last_error = Some(err);
+        }
+    }
+
+    fn has_unsaved_edits(&self) -> bool {
+        // `undo_stack` accumulates one entry per recorded edit (color, label,
+        // layout, …). Loading a tree clears it (see `load_from_path`), so a
+        // non-empty stack reliably indicates user changes since the last load.
+        !self.undo_stack.is_empty()
     }
 
     fn consume_system_open_requests(&mut self, ctx: &egui::Context) {
@@ -5668,6 +5707,50 @@ impl eframe::App for FigTreeGui {
                 });
             if !open || close_clicked {
                 self.load_warning_dialog = None;
+            }
+        }
+
+        if let Some(pending) = self.pending_external_open.clone() {
+            let mut open = true;
+            let mut decision: Option<bool> = None; // Some(true)=open, Some(false)=cancel
+            let display_path = pending.display().to_string();
+            egui::Window::new("Open new tree?")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.label(
+                        "The current tree has unsaved changes. Opening a new file will discard them.",
+                    );
+                    ui.add_space(4.0);
+                    ui.label(format!("Open: {}", display_path));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Discard and open").clicked() {
+                            decision = Some(true);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            decision = Some(false);
+                        }
+                    });
+                });
+            match decision {
+                Some(true) => {
+                    self.pending_external_open = None;
+                    if let Err(err) = self.load_from_path(pending.clone()) {
+                        error!("Failed to load {}: {}", pending.display(), err);
+                        self.last_error = Some(err);
+                    }
+                }
+                Some(false) => {
+                    self.pending_external_open = None;
+                }
+                None => {
+                    if !open {
+                        self.pending_external_open = None;
+                    }
+                }
             }
         }
     }

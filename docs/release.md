@@ -1,0 +1,127 @@
+# rhaeTree — macOS 发布 Runbook
+
+本文档说明分发版 macOS `.app` 的签名、公证与文件关联校验流程。
+开发期本机测试不需要走完整流程，参考末尾「快速本机测试」即可。
+
+## 1. Bundle Identifier 与版本号
+
+- 发布版固定 `--bundle-id`（建议 `org.rhaetree.app`）。Bundle ID 一旦上线
+  就不能再改：Launch Services 把"用户的默认打开方式"按 ID 持久化，
+  改 ID 等价于发布一个新应用，旧关联会丢失。
+- `--version` 与 `Cargo.toml` 中 `version` 同步即可。
+
+## 2. 代码签名 + 公证（推荐流程）
+
+```bash
+# 一次性配置 notarytool 凭据（Apple ID + app-specific password + Team ID）
+xcrun notarytool store-credentials rhaetree-notary \
+  --apple-id you@example.com \
+  --team-id  XXXXXXXXXX \
+  --password app-specific-password
+
+# 构建 + 用 Developer ID Application 证书签名（自动加 hardened runtime + timestamp）
+scripts/build_macos_app.sh \
+  --bundle-id org.rhaetree.app \
+  --version 1.0.0 \
+  --developer-id "Developer ID Application: YOUR ORG (XXXXXXXXXX)"
+
+# 打 zip 提交公证
+ditto -c -k --sequesterRsrc --keepParent dist/rhaeTree.app dist/rhaeTree.zip
+xcrun notarytool submit dist/rhaeTree.zip \
+  --keychain-profile rhaetree-notary --wait
+
+# 装订工单（用户离线也能通过 Gatekeeper）
+xcrun stapler staple dist/rhaeTree.app
+xcrun stapler validate dist/rhaeTree.app
+```
+
+未公证 / 未装订的 `.app`：
+
+- 用户首次双击会被 Gatekeeper 阻止；
+- macOS **不会**把它列入「打开方式」候选 —— 也就是本次设计要支持的核心
+  流程在未公证的包上无法工作。所以发布前公证不是可选项。
+
+## 3. Launch Services 注册与校验
+
+构建脚本结尾会自动执行：
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f <app>
+```
+
+把新的 UTI 声明刷进 LS 数据库。该步失败不阻断打包，但 Finder 可能拿不到
+最新关联。可以加 `--no-lsregister` 跳过（例如 CI 中 sandbox 环境）。
+
+校验关联是否生效：
+
+```bash
+mdls -name kMDItemContentType examples/FigTree.tre
+# 期望输出：kMDItemContentType = "<bundle_id>.nexus"
+
+mdls -name kMDItemContentType some.nwk
+# 期望输出：kMDItemContentType = "<bundle_id>.newick"
+
+# 看某个 UTI 当前默认应用的 bundle id：
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -dump \
+  | grep -A2 "<bundle_id>.nexus"
+```
+
+## 4. 文件类型设计回顾
+
+| UTI | 扩展名 | LSHandlerRank | conform |
+|---|---|---|---|
+| `<bundle_id>.newick` | `nwk`, `newick` | `Default` | `public.plain-text` |
+| `<bundle_id>.nexus`  | `nex`, `nexus`, `tre`, `tree`, `trees` | `Default` | `public.plain-text` |
+| `<bundle_id>.rtr`    | `rtr` | `Owner` | `public.plain-text` |
+
+只有 `.rtr` 用 `Owner`（rhaeTree 是该格式作者），其余通用扩展名用
+`Default`，让用户自由选择是否设为默认。
+
+## 5. 安装位置与首次启动
+
+- 推荐分发路径：用户拖到 `/Applications`。
+- 也可以放 `~/Applications`，但 LS 索引可能延迟。
+- 首次双击 `.app`：
+  - 已公证 → 直接启动。
+  - 已签名未公证 → "无法验证开发者"对话框 → 系统设置 → 隐私与安全 → 仍要打开。
+  - ad-hoc / 未签名 → "已损坏，应移到废纸篓" → 用户需手工执行
+    `xattr -dr com.apple.quarantine path/to/rhaeTree.app`。
+
+## 6. 快速本机测试
+
+无需公证：
+
+```bash
+scripts/build_macos_app.sh \
+  --bundle-id com.yorkson.rhaetree.dev \
+  --version 1.0.0-local \
+  --output-dir dist/local-test
+
+# 解隔离（如果 .app 来自下载或 quarantined location）
+xattr -dr com.apple.quarantine dist/local-test/rhaeTree.app
+
+# 直接用命令行打开一个 .tre 验证 application:openURLs: 投递成功
+open -a "$(pwd)/dist/local-test/rhaeTree.app" examples/FigTree.tre
+
+# Finder 双击：
+open dist/local-test
+# 在 Finder 里把某个 .nex 的「打开方式」改为这个 .app，再双击。
+```
+
+校验本次实现的关键点（参见 `docs/macos-open-with.md` §6 验证清单）：
+
+1. 冷启动单文件
+2. 冷启动多文件 → 状态栏出现"忽略 N 个"提示
+3. 运行时打开有未保存改动 → 弹"Discard and open / Cancel"对话框
+4. CLI `cargo run -- examples/FigTree.tre` 与 `--headless` 行为不变
+
+## 7. 卸载残留处理
+
+如果调试期反复换 Bundle ID，LS 数据库会留下幽灵关联。彻底重置：
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+  -kill -r -domain local -domain system -domain user
+```
+
+执行后 Dock / Finder 的"最近打开"会重建索引，几秒到几十秒之间。
