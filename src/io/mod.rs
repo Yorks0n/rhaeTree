@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 use phylotree::tree::{NewickFormat, Tree as PhyloTree};
 
-use crate::tree::{Tree, TreeBundle, TreeFileFormat};
+use crate::tree::{
+    NodeId, Tree, TreeBundle, TreeFileFormat, TreeNode, SERIALIZED_NODE_ID_ATTRIBUTE,
+};
 
 pub fn load_trees(path: &Path) -> Result<TreeBundle> {
     let raw = fs::read_to_string(path)
@@ -280,10 +283,7 @@ pub fn save_rtr(path: &Path, trees: &[Tree], settings: &BTreeMap<String, String>
             .label
             .clone()
             .unwrap_or_else(|| format!("tree_{}", i + 1));
-        let mut newick = tree.newick.trim().to_string();
-        if !newick.ends_with(';') {
-            newick.push(';');
-        }
+        let newick = serialize_tree_newick(tree)?;
         out.push_str(&format!(
             "\ttree {} = [&R] {}\n",
             quote_taxon_label(&tree_name),
@@ -300,6 +300,147 @@ pub fn save_rtr(path: &Path, trees: &[Tree], settings: &BTreeMap<String, String>
     out.push_str("end;\n");
 
     fs::write(path, out).with_context(|| format!("failed to write RTR file: {}", path.display()))
+}
+
+fn serialize_tree_newick(tree: &Tree) -> Result<String> {
+    let root = tree
+        .root
+        .ok_or_else(|| anyhow!("tree #{} has no root", tree.id + 1))?;
+    if root >= tree.nodes.len() {
+        bail!("tree #{} has an invalid root node", tree.id + 1);
+    }
+
+    let mut state = vec![0u8; tree.nodes.len()];
+    let mut out = String::with_capacity(tree.newick.len().max(tree.nodes.len() * 8));
+    append_newick_node(tree, root, &mut state, &mut out)?;
+    if state.iter().any(|visit| *visit != 2) {
+        bail!(
+            "tree #{} contains nodes unreachable from its root",
+            tree.id + 1
+        );
+    }
+    out.push(';');
+    Ok(out)
+}
+
+fn append_newick_node(
+    tree: &Tree,
+    node_id: NodeId,
+    state: &mut [u8],
+    out: &mut String,
+) -> Result<()> {
+    let Some(node) = tree.nodes.get(node_id) else {
+        bail!("tree #{} references missing node {node_id}", tree.id + 1);
+    };
+    match state[node_id] {
+        1 => bail!("tree #{} contains a cycle at node {node_id}", tree.id + 1),
+        2 => bail!(
+            "tree #{} references node {node_id} more than once",
+            tree.id + 1
+        ),
+        _ => {}
+    }
+    state[node_id] = 1;
+
+    if !node.children.is_empty() {
+        out.push('(');
+        for (index, child_id) in node.children.iter().copied().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            append_newick_node(tree, child_id, state, out)?;
+        }
+        out.push(')');
+    }
+
+    if let Some(name) = node.name.as_deref() {
+        out.push_str(&quote_newick_name(name));
+    }
+    append_node_annotations(node, out);
+    if node.parent.is_some() {
+        if let Some(length) = node.length {
+            if !length.is_finite() {
+                bail!(
+                    "tree #{} node {node_id} has a non-finite branch length",
+                    tree.id + 1
+                );
+            }
+            write!(out, ":{length}").expect("writing to String cannot fail");
+        }
+    }
+
+    state[node_id] = 2;
+    Ok(())
+}
+
+fn quote_newick_name(name: &str) -> String {
+    let needs_quote = name.is_empty()
+        || name.chars().any(|c| {
+            c.is_whitespace()
+                || matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | ':' | ';' | ',' | '"')
+        });
+    if needs_quote {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    } else {
+        name.to_string()
+    }
+}
+
+fn append_node_annotations(node: &TreeNode, out: &mut String) {
+    let mut annotations = Vec::with_capacity(node.attributes.len() + 2);
+    annotations.push(format!("{SERIALIZED_NODE_ID_ATTRIBUTE}={}", node.id));
+    if let Some(label) = node.label.as_deref() {
+        annotations.push(format!("label={}", format_annotation_value(label)));
+    }
+
+    let mut attributes: Vec<_> = node
+        .attributes
+        .iter()
+        .filter(|(key, _)| {
+            !key.eq_ignore_ascii_case("label") && key.as_str() != SERIALIZED_NODE_ID_ATTRIBUTE
+        })
+        .collect();
+    attributes.sort_by(|(left, _), (right, _)| left.cmp(right));
+    for (key, value) in attributes {
+        annotations.push(format!("{key}={}", format_annotation_value(value)));
+    }
+
+    out.push_str("[&");
+    out.push_str(&annotations.join(","));
+    out.push(']');
+}
+
+fn format_annotation_value(value: &str) -> String {
+    let trimmed = value.trim();
+    let structured = [('{', '}'), ('(', ')')]
+        .iter()
+        .any(|(open, close)| trimmed.starts_with(*open) && trimmed.ends_with(*close));
+    if value == trimmed
+        && (structured
+            || trimmed.parse::<f64>().is_ok()
+            || matches!(
+                trimmed.to_ascii_lowercase().as_str(),
+                "true" | "false" | "null"
+            ))
+    {
+        trimmed.to_string()
+    } else {
+        let mut encoded = String::with_capacity(value.len() + 2);
+        encoded.push('"');
+        for ch in value.chars() {
+            match ch {
+                '\\' => encoded.push_str("\\\\"),
+                '"' => encoded.push_str("\\\""),
+                ']' => encoded.push_str("\\u005D"),
+                '\n' => encoded.push_str("\\n"),
+                '\r' => encoded.push_str("\\r"),
+                '\t' => encoded.push_str("\\t"),
+                _ => encoded.push(ch),
+            }
+        }
+        encoded.push('"');
+        encoded
+    }
 }
 
 fn taxa_labels_from_tree(tree: &Tree) -> Vec<String> {
@@ -658,7 +799,19 @@ fn normalise_newick(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::viewer::TreeViewer;
     use std::path::Path;
+
+    fn temp_rtr_path(test_name: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rhaetree-{test_name}-{}-{nonce}.rtr",
+            std::process::id()
+        ))
+    }
 
     #[test]
     fn detects_format_correctly() {
@@ -839,6 +992,10 @@ END;";
         assert_eq!(trees.len(), 1);
         assert_eq!(trees[0].label.as_deref(), Some("tree_1"));
         assert_eq!(trees[0].leaf_count(), 3);
+        assert!(trees[0]
+            .nodes
+            .iter()
+            .any(|node| node.label.as_deref() == Some("0.98")));
     }
 
     #[test]
@@ -864,6 +1021,90 @@ END;";
         assert_eq!(
             leaf_names,
             vec!["Alpha_taxon".to_string(), "Beta taxon".to_string()]
+        );
+    }
+
+    #[test]
+    fn save_rtr_round_trips_edited_tip_fields_and_annotations() {
+        let mut tree = parse_newick("(A[&rate=0.5]:0.1,B:0.2);").unwrap().remove(0);
+        let tip = tree
+            .nodes
+            .iter_mut()
+            .find(|node| node.name.as_deref() == Some("A"))
+            .expect("tip A");
+        let original_id = tip.id;
+        tip.name = Some("Renamed \"tip\", [A]".to_string());
+        tip.label = Some("display,label] \"quoted\"".to_string());
+        tip.set_attribute(
+            "note".to_string(),
+            "edited, annotation] \\ path".to_string(),
+        );
+
+        let path = temp_rtr_path("edited-tip");
+        save_rtr(&path, &[tree], &BTreeMap::new()).unwrap();
+        let loaded = load_trees(&path).unwrap();
+        let _ = fs::remove_file(&path);
+
+        let tip = loaded.trees[0]
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Renamed \"tip\", [A]"))
+            .expect("renamed tip after reload");
+        assert_eq!(tip.id, original_id);
+        assert_eq!(tip.label.as_deref(), Some("display,label] \"quoted\""));
+        assert_eq!(
+            tip.get_attribute("note").map(String::as_str),
+            Some("edited, annotation] \\ path")
+        );
+        assert_eq!(tip.get_numeric_attribute("rate"), Some(0.5));
+        assert!(loaded.trees[0]
+            .nodes
+            .iter()
+            .all(|node| !node.attributes.contains_key(SERIALIZED_NODE_ID_ATTRIBUTE)));
+    }
+
+    #[test]
+    fn save_rtr_round_trips_rerooted_topology_and_node_ids() {
+        let tree = parse_newick("(((A:1,B:1)AB:1,C:1)ABC:1,D:1)Root;")
+            .unwrap()
+            .remove(0);
+        let reroot_target = tree
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("C"))
+            .expect("tip C")
+            .id;
+        let mut viewer = TreeViewer::new();
+        viewer.set_trees(vec![tree]);
+        viewer.reroot_at_branch(reroot_target);
+        let expected = viewer.current_tree().expect("rerooted tree").clone();
+
+        let path = temp_rtr_path("reroot");
+        let mut settings = BTreeMap::new();
+        settings.insert(
+            format!("override.branch.{reroot_target}"),
+            "#112233FF".to_string(),
+        );
+        save_rtr(&path, viewer.trees(), &settings).unwrap();
+        let loaded = load_trees(&path).unwrap();
+        let _ = fs::remove_file(&path);
+        let actual = &loaded.trees[0];
+
+        assert_eq!(actual.root, expected.root);
+        assert_eq!(actual.nodes.len(), expected.nodes.len());
+        for (actual_node, expected_node) in actual.nodes.iter().zip(&expected.nodes) {
+            assert_eq!(actual_node.id, expected_node.id);
+            assert_eq!(actual_node.name, expected_node.name);
+            assert_eq!(actual_node.parent, expected_node.parent);
+            assert_eq!(actual_node.children, expected_node.children);
+            assert_eq!(actual_node.length, expected_node.length);
+        }
+        assert_eq!(
+            loaded
+                .metadata
+                .get(&format!("override.branch.{reroot_target}"))
+                .map(String::as_str),
+            Some("#112233FF")
         );
     }
 }

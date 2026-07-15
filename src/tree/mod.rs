@@ -10,6 +10,7 @@ pub mod skia_renderer;
 pub mod viewer;
 
 pub type NodeId = phylotree::tree::NodeId;
+pub(crate) const SERIALIZED_NODE_ID_ATTRIBUTE: &str = "!rhaetreeId";
 
 #[derive(Debug, Clone)]
 pub enum NodeNumericValue {
@@ -76,8 +77,9 @@ pub struct Tree {
 
 impl Tree {
     pub fn new(id: usize, label: Option<String>, newick: String, phylo: PhyloTree) -> Self {
-        let root = phylo.get_root().ok();
-        let nodes = Self::build_nodes_from_phylo(&phylo);
+        let mut root = phylo.get_root().ok();
+        let mut nodes = Self::build_nodes_from_phylo(&phylo);
+        Self::restore_serialized_node_ids(&mut nodes, &mut root);
         Self {
             id,
             label,
@@ -329,6 +331,62 @@ impl Tree {
         }
         nodes
     }
+
+    fn restore_serialized_node_ids(nodes: &mut Vec<TreeNode>, root: &mut Option<NodeId>) {
+        let node_count = nodes.len();
+        let old_to_saved = (|| {
+            let mut mapping = vec![NodeId::MAX; node_count];
+            let mut seen = vec![false; node_count];
+
+            for node in nodes.iter() {
+                if node.id >= node_count {
+                    return None;
+                }
+                let saved_id = node
+                    .attributes
+                    .get(SERIALIZED_NODE_ID_ATTRIBUTE)?
+                    .parse::<NodeId>()
+                    .ok()?;
+                if saved_id >= node_count || seen[saved_id] {
+                    return None;
+                }
+                seen[saved_id] = true;
+                mapping[node.id] = saved_id;
+            }
+            Some(mapping)
+        })();
+        let Some(old_to_saved) = old_to_saved else {
+            Self::remove_serialized_node_ids(nodes);
+            return;
+        };
+
+        let old_root = *root;
+        let mut reordered: Vec<Option<TreeNode>> = vec![None; node_count];
+        for mut node in std::mem::take(nodes) {
+            let saved_id = old_to_saved[node.id];
+            node.id = saved_id;
+            node.parent = node.parent.map(|parent| old_to_saved[parent]);
+            for child in &mut node.children {
+                *child = old_to_saved[*child];
+            }
+            node.attributes.remove(SERIALIZED_NODE_ID_ATTRIBUTE);
+            node.numeric_attributes.remove(SERIALIZED_NODE_ID_ATTRIBUTE);
+            reordered[saved_id] = Some(node);
+        }
+
+        *nodes = reordered
+            .into_iter()
+            .map(|node| node.expect("validated serialized node id"))
+            .collect();
+        *root = old_root.map(|old_id| old_to_saved[old_id]);
+    }
+
+    fn remove_serialized_node_ids(nodes: &mut [TreeNode]) {
+        for node in nodes {
+            node.attributes.remove(SERIALIZED_NODE_ID_ATTRIBUTE);
+            node.numeric_attributes.remove(SERIALIZED_NODE_ID_ATTRIBUTE);
+        }
+    }
 }
 
 /// Node within a phylogenetic tree.
@@ -363,6 +421,9 @@ impl TreeNode {
     }
 
     pub fn set_attribute(&mut self, key: String, value: String) {
+        if key.eq_ignore_ascii_case("label") {
+            self.label = Some(value.clone());
+        }
         self.attributes.insert(key.clone(), value.clone());
         self.update_numeric_attribute(&key, &value);
     }
@@ -384,7 +445,14 @@ impl TreeNode {
     }
 
     pub(crate) fn from_phylo(node: &PhyloNode) -> Self {
-        let mut tree_node = TreeNode::new(node.id, node.name.clone(), node.parent_edge);
+        let name = node.name.as_deref().map(|name| {
+            if name.len() >= 2 && name.starts_with('"') && name.ends_with('"') {
+                name[1..name.len() - 1].replace("\"\"", "\"")
+            } else {
+                name.to_string()
+            }
+        });
+        let mut tree_node = TreeNode::new(node.id, name, node.parent_edge);
         tree_node.parent = node.parent;
         tree_node.children = node.children.clone();
         if let Some(comment) = node.comment.as_deref() {
@@ -451,9 +519,7 @@ fn parse_comment_attributes(comment: &str) -> Vec<(String, String)> {
             }
 
             let key = raw_key.trim_matches(|c| c == '\'' || c == '"').to_string();
-            let value = raw_value
-                .trim_matches(|c| c == '\'' || c == '"')
-                .to_string();
+            let value = decode_annotation_value(raw_value);
 
             if !key.is_empty() {
                 attributes.push((key, value));
@@ -468,9 +534,27 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
 
     for ch in input.chars() {
+        if let Some(active_quote) = quote {
+            current.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
         match ch {
+            '\'' | '"' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
             '{' | '[' | '(' => {
                 depth += 1;
                 current.push(ch);
@@ -498,6 +582,48 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
     }
 
     parts
+}
+
+fn decode_annotation_value(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Some(quote) = trimmed.chars().next() else {
+        return String::new();
+    };
+    if !matches!(quote, '\'' | '"') || !trimmed.ends_with(quote) || trimmed.len() < 2 {
+        return trimmed.to_string();
+    }
+
+    let inner = &trimmed[quote.len_utf8()..trimmed.len() - quote.len_utf8()];
+    let mut decoded = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            decoded.push(ch);
+            continue;
+        }
+
+        match chars.next() {
+            Some('n') => decoded.push('\n'),
+            Some('r') => decoded.push('\r'),
+            Some('t') => decoded.push('\t'),
+            Some('u') => {
+                let escape: String = chars.by_ref().take(4).collect();
+                if escape == "005D" {
+                    decoded.push(']');
+                } else {
+                    decoded.push_str("\\u");
+                    decoded.push_str(&escape);
+                }
+            }
+            Some(next @ ('\\' | '\'' | '"')) => decoded.push(next),
+            Some(next) => {
+                decoded.push('\\');
+                decoded.push(next);
+            }
+            None => decoded.push('\\'),
+        }
+    }
+    decoded
 }
 
 fn parse_numeric_values(value: &str) -> Option<Vec<f64>> {
