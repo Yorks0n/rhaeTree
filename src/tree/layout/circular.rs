@@ -232,7 +232,7 @@ fn compute_node_angles(
     angular_range: f32,
     start_angle: f32,
     node_angles: &mut [f32],
-) -> (f32, f32) {
+) -> f32 {
     let node = &tree.nodes[node_id];
 
     if node.children.is_empty() {
@@ -244,14 +244,16 @@ fn compute_node_angles(
             start_angle
         };
         node_angles[node_id] = angle;
-        (angle, angle)
+        angle
     } else {
-        // 内部节点：计算子节点的角度范围
-        let mut min_angle = f32::INFINITY;
-        let mut max_angle = f32::NEG_INFINITY;
+        // 内部节点：取直接子节点所形成的下一组圆弧的角度范围中点。
+        // 不使用所有后代叶节点的范围，否则不平衡子树会把连接直线
+        // 拉向整个大扇区的中点，而不是下一层圆弧组的中间。
+        let mut min_child_angle = f32::INFINITY;
+        let mut max_child_angle = f32::NEG_INFINITY;
 
         for &child_id in &node.children {
-            let (child_min, child_max) = compute_node_angles(
+            let child_angle = compute_node_angles(
                 tree,
                 child_id,
                 positions,
@@ -260,14 +262,13 @@ fn compute_node_angles(
                 start_angle,
                 node_angles,
             );
-            min_angle = min_angle.min(child_min);
-            max_angle = max_angle.max(child_max);
+            min_child_angle = min_child_angle.min(child_angle);
+            max_child_angle = max_child_angle.max(child_angle);
         }
 
-        // 内部节点的角度是子节点角度的平均值
-        let angle = (min_angle + max_angle) * 0.5;
+        let angle = (min_child_angle + max_child_angle) * 0.5;
         node_angles[node_id] = angle;
-        (min_angle, max_angle)
+        angle
     }
 }
 
@@ -298,4 +299,59 @@ fn calculate_bounding_box(positions: &[(f32, f32)]) -> (f32, f32, f32, f32) {
     }
 
     (min_x, max_x, min_y, max_y)
+}
+
+#[cfg(test)]
+mod tests {
+    use phylotree::tree::Tree as PhyloTree;
+
+    use super::*;
+
+    #[test]
+    fn internal_straight_connects_to_midpoint_of_next_arc_group() {
+        let newick = "((((A:1,B:1,C:1,D:1)Large:1,E:1)Target:1,G:1)Above:1,F:1)Root;".to_string();
+        let phylo = PhyloTree::from_newick(&newick).expect("valid test newick");
+        let tree = Tree::new(1, Some("test".to_string()), newick, phylo);
+        let layout = build(&tree).expect("circular layout");
+        let target = tree
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Target"))
+            .expect("target internal node");
+
+        let incoming = layout
+            .arc_segments
+            .iter()
+            .find(|arc| arc.child == target.id)
+            .expect("incoming target branch");
+        let child_arc_angles: Vec<f32> = layout
+            .arc_segments
+            .iter()
+            .filter(|arc| arc.parent == target.id)
+            .map(|arc| arc.start_angle)
+            .collect();
+        assert_eq!(child_arc_angles.len(), 2);
+
+        let min_child_angle = child_arc_angles
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        let max_child_angle = child_arc_angles
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        let expected_midpoint = (min_child_angle + max_child_angle) * 0.5;
+
+        assert!((incoming.start_angle - expected_midpoint).abs() < 1e-6);
+
+        let straight = layout
+            .rect_segments
+            .iter()
+            .find(|segment| segment.child == Some(target.id))
+            .expect("incoming target straight segment");
+        let point_angle =
+            |point: (f32, f32)| (point.1 - incoming.center.1).atan2(point.0 - incoming.center.0);
+        assert!((point_angle(straight.start) - expected_midpoint).abs() < 1e-6);
+        assert!((point_angle(straight.end) - expected_midpoint).abs() < 1e-6);
+    }
 }

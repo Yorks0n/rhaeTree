@@ -444,7 +444,8 @@ pub fn build_tree_scene(
                 let dir = if r > 1e-6 {
                     v / r
                 } else {
-                    let angle = compute_circular_tip_angle_screen(tree, layout, node, &to_screen);
+                    let angle =
+                        compute_circular_outward_angle_screen(tree, layout, node, &to_screen);
                     Vec2::new(angle.cos(), angle.sin())
                 };
                 radii.push((node.id, r, dir));
@@ -665,7 +666,7 @@ pub fn build_tree_scene(
                         | TreeLayoutType::Radial
                         | TreeLayoutType::Daylight => {
                             let base_angle = match layout.layout_type {
-                                TreeLayoutType::Circular => compute_circular_tip_angle_screen(
+                                TreeLayoutType::Circular => compute_circular_outward_angle_screen(
                                     tree, layout, node, &to_screen,
                                 ),
                                 _ => {
@@ -787,20 +788,12 @@ pub fn build_tree_scene(
                         }
                     }
                     TreeLayoutType::Circular => {
-                        if let Some(parent_id) = node.parent {
-                            let parent_p = to_local(to_screen(layout.positions[parent_id]));
-                            let dir = p - parent_p;
-                            if dir.length_sq() > 1e-6 {
-                                let unit = dir / dir.length();
-                                let anchor = p + unit * 8.0;
-                                let (angle, align) = readable_rotation(dir.y.atan2(dir.x));
-                                (anchor, angle, align)
-                            } else {
-                                (Pos2::new(p.x + 8.0, p.y), 0.0, egui::Align2::LEFT_CENTER)
-                            }
-                        } else {
-                            (Pos2::new(p.x + 8.0, p.y), 0.0, egui::Align2::LEFT_CENTER)
-                        }
+                        let outward_angle =
+                            compute_circular_outward_angle_screen(tree, layout, node, &to_screen);
+                        let outward = Vec2::new(outward_angle.cos(), outward_angle.sin());
+                        let anchor = p + outward * 8.0;
+                        let (angle, align) = readable_rotation(outward_angle);
+                        (anchor, angle, align)
                     }
                     _ => {
                         if let Some(parent_id) = node.parent {
@@ -1064,7 +1057,7 @@ fn sibling_fanout_angle(
     Some(base_angle + offset)
 }
 
-fn compute_circular_tip_angle_screen<F>(
+fn compute_circular_outward_angle_screen<F>(
     tree: &Tree,
     layout: &TreeLayout,
     node: &TreeNode,
@@ -1073,15 +1066,20 @@ fn compute_circular_tip_angle_screen<F>(
 where
     F: Fn((f32, f32)) -> Pos2,
 {
-    let child = to_screen(layout.positions[node.id]);
+    let node_pos = to_screen(layout.positions[node.id]);
 
-    // 1) Root→leaf direction: root sits at radius≈0 (tree center) in circular layout,
+    // 1) Root→node direction: root sits at radius≈0 (tree center) in circular layout,
     //    so this gives the exact radial outward direction and is maximally numerically
-    //    stable (vector length = full leaf radius). No dependency on branch.points
+    //    stable (vector length = full node radius). No dependency on branch.points
     //    coordinate consistency.
     if let Some(root_id) = tree.root {
+        // The root is the circular center, so root→root has no defined direction.
+        // Keep its label horizontal instead of deriving an arbitrary bbox-center angle.
+        if node.id == root_id {
+            return 0.0;
+        }
         let root = to_screen(layout.positions[root_id]);
-        if let Some(angle) = angle_if_non_degenerate(child.x - root.x, child.y - root.y) {
+        if let Some(angle) = angle_if_non_degenerate(node_pos.x - root.x, node_pos.y - root.y) {
             return angle;
         }
     }
@@ -1089,7 +1087,7 @@ where
     // 2) Fallback to direct parent->child direction.
     if let Some(parent_id) = node.parent {
         let parent = to_screen(layout.positions[parent_id]);
-        if let Some(angle) = angle_if_non_degenerate(child.x - parent.x, child.y - parent.y) {
+        if let Some(angle) = angle_if_non_degenerate(node_pos.x - parent.x, node_pos.y - parent.y) {
             return angle;
         }
 
@@ -1116,7 +1114,7 @@ where
 
     // 3) Radial outward direction from layout center.
     let center = to_screen((layout.width * 0.5, layout.height * 0.5));
-    if let Some(angle) = angle_if_non_degenerate(child.x - center.x, child.y - center.y) {
+    if let Some(angle) = angle_if_non_degenerate(node_pos.x - center.x, node_pos.y - center.y) {
         return angle;
     }
 
@@ -1124,7 +1122,7 @@ where
     let mut anc = node.parent;
     while let Some(anc_id) = anc {
         let anc_p = to_screen(layout.positions[anc_id]);
-        if let Some(angle) = angle_if_non_degenerate(child.x - anc_p.x, child.y - anc_p.y) {
+        if let Some(angle) = angle_if_non_degenerate(node_pos.x - anc_p.x, node_pos.y - anc_p.y) {
             return angle;
         }
         anc = tree.nodes[anc_id].parent;
@@ -1367,5 +1365,93 @@ fn push_shape_primitive(
                 color,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use phylotree::tree::Tree as PhyloTree;
+
+    use super::*;
+    use crate::tree::layout::{TreeLayout, TreeLayoutType};
+    use crate::tree::painter::{NodeLabelDisplay, TreePainter};
+
+    #[test]
+    fn circular_node_label_follows_root_to_node_ray() {
+        let newick = "(((A:1,B:1)Target:1,C:1)Parent:1,D:1)Root;".to_string();
+        let phylo = PhyloTree::from_newick(&newick).expect("valid test newick");
+        let tree = Tree::new(1, Some("test".to_string()), newick, phylo);
+        let layout =
+            TreeLayout::from_tree(&tree, TreeLayoutType::Circular).expect("circular layout");
+        let target = tree
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Target"))
+            .expect("target internal node");
+        let root_id = tree.root.expect("tree root");
+
+        let mut painter = TreePainter::default();
+        painter.show_node_labels = true;
+        painter.node_label_display = NodeLabelDisplay::Names;
+
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 800.0));
+        let to_screen = painter.create_to_screen_transform(&tree, &layout, rect);
+        let target_pos = to_screen(layout.positions[target.id]);
+        let root_pos = to_screen(layout.positions[root_id]);
+        let ray = target_pos - root_pos;
+        let unit_ray = ray / ray.length();
+        let (expected_angle, expected_align) = readable_rotation(ray.y.atan2(ray.x));
+
+        let scene = build_tree_scene(
+            &tree,
+            &layout,
+            &painter,
+            &HashSet::new(),
+            &HashSet::new(),
+            rect,
+            rect,
+            rect,
+            1.0,
+            None,
+            SceneLayer::Full,
+        );
+        let (anchor, angle, align) = scene
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                ScenePrimitive::Text {
+                    text,
+                    anchor,
+                    angle,
+                    align,
+                    ..
+                } if text == "Target" => Some((*anchor, *angle, *align)),
+                _ => None,
+            })
+            .expect("target node label primitive");
+
+        assert!((angle - expected_angle).abs() < 1e-5);
+        assert_eq!(align, expected_align);
+        assert!((anchor - (target_pos + unit_ray * 8.0)).length() < 1e-4);
+
+        let (root_anchor, root_angle, root_align) = scene
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                ScenePrimitive::Text {
+                    text,
+                    anchor,
+                    angle,
+                    align,
+                    ..
+                } if text == "Root" => Some((*anchor, *angle, *align)),
+                _ => None,
+            })
+            .expect("root node label primitive");
+        assert_eq!(root_angle, 0.0);
+        assert_eq!(root_align, egui::Align2::LEFT_CENTER);
+        assert!((root_anchor - (root_pos + Vec2::new(8.0, 0.0))).length() < 1e-4);
     }
 }
