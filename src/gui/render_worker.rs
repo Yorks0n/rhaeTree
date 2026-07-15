@@ -20,10 +20,18 @@ pub struct RenderResult {
     pub job_id: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitStatus {
+    Submitted,
+    Busy,
+    Dead,
+}
+
 pub struct RenderWorker {
     job_sender: mpsc::SyncSender<RenderJob>,
     result_receiver: mpsc::Receiver<RenderResult>,
     pub worker_dead: bool,
+    in_flight: bool,
 }
 
 impl RenderWorker {
@@ -73,28 +81,100 @@ impl RenderWorker {
             job_sender: job_tx,
             result_receiver: result_rx,
             worker_dead: false,
+            in_flight: false,
         }
     }
 
-    /// Try to submit a job. Returns `false` if the worker thread has died.
-    /// If the channel is full (worker is busy with a queued job), the new job
-    /// is silently dropped — the caller will retry next frame.
-    pub fn try_send(&mut self, job: RenderJob) -> bool {
+    pub fn is_busy(&self) -> bool {
+        self.in_flight
+    }
+
+    /// Try to submit a job without replacing the currently running one.
+    /// The caller should wait for `try_recv` before building another expensive
+    /// scene; the next submitted job will then contain the latest UI state.
+    pub fn try_send(&mut self, job: RenderJob) -> SubmitStatus {
         if self.worker_dead {
-            return false;
+            return SubmitStatus::Dead;
+        }
+        if self.in_flight {
+            return SubmitStatus::Busy;
         }
         match self.job_sender.try_send(job) {
-            Ok(_) => true,
-            Err(mpsc::TrySendError::Full(_)) => true, // busy but alive
+            Ok(_) => {
+                self.in_flight = true;
+                SubmitStatus::Submitted
+            }
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.in_flight = true;
+                SubmitStatus::Busy
+            }
             Err(mpsc::TrySendError::Disconnected(_)) => {
                 self.worker_dead = true;
-                false
+                self.in_flight = false;
+                SubmitStatus::Dead
             }
         }
     }
 
     /// Poll for a completed result without blocking.
-    pub fn try_recv(&self) -> Option<RenderResult> {
-        self.result_receiver.try_recv().ok()
+    pub fn try_recv(&mut self) -> Option<RenderResult> {
+        match self.result_receiver.try_recv() {
+            Ok(result) => {
+                self.in_flight = false;
+                Some(result)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.worker_dead = true;
+                self.in_flight = false;
+                None
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    fn empty_scene() -> TreeSceneGraph {
+        TreeSceneGraph {
+            size: egui::vec2(2.0, 2.0),
+            primitives: Vec::new(),
+            tip_label_hits: Vec::new(),
+        }
+    }
+
+    fn job(job_id: u64) -> RenderJob {
+        RenderJob {
+            base: empty_scene(),
+            decor: empty_scene(),
+            ppp: 1.0,
+            scale: 1.0,
+            job_id,
+        }
+    }
+
+    #[test]
+    fn busy_worker_does_not_accept_or_mislabel_a_second_job() {
+        let mut worker = RenderWorker::new(egui::Context::default());
+        assert_eq!(worker.try_send(job(1)), SubmitStatus::Submitted);
+        assert!(worker.is_busy());
+        assert_eq!(worker.try_send(job(2)), SubmitStatus::Busy);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let result = loop {
+            if let Some(result) = worker.try_recv() {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "render worker timed out");
+            std::thread::yield_now();
+        };
+
+        assert_eq!(result.job_id, 1);
+        assert!(!worker.is_busy());
+        assert_eq!(worker.try_send(job(3)), SubmitStatus::Submitted);
     }
 }

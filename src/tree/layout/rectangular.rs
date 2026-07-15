@@ -82,7 +82,7 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
     };
 
     // Create continuous branches from segments
-    let mut continuous_branches = Vec::new();
+    let mut continuous_branches = Vec::with_capacity(data.edges.len());
 
     // Group segments by child to create continuous branch paths
     for (parent, child) in &data.edges {
@@ -106,13 +106,10 @@ pub(super) fn build(tree: &Tree) -> Option<TreeLayout> {
         // Only add parent position for vertical segments
         // (when parent has multiple children)
         if parent_pos.1 != child_pos.1 && parent_pos != shoulder {
-            // Check if parent has multiple children by looking for vertical segment
-            let has_vertical = data
-                .segments
-                .iter()
-                .any(|seg| seg.parent == *parent && seg.kind == RectSegmentKind::Vertical);
-
-            if has_vertical {
+            // A vertical segment is created exactly when this parent has more
+            // than one child. Checking the topology is O(1), unlike scanning
+            // every layout segment for every edge.
+            if tree.nodes[*parent].children.len() > 1 {
                 // Add intermediate points along vertical line if needed
                 // This ensures smooth selection along the entire branch
                 points.push(parent_pos);

@@ -114,6 +114,18 @@ pub fn build_tree_scene(
     let include_base = layer.include_base();
     let include_decor = layer.include_decor();
     let include_interaction = layer.include_interaction();
+    let circular_arcs_by_child: Vec<Option<&crate::tree::layout::ArcSegment>> =
+        if matches!(layout.layout_type, TreeLayoutType::Circular) {
+            let mut by_child = vec![None; tree.nodes.len()];
+            for arc in &layout.arc_segments {
+                if let Some(slot) = by_child.get_mut(arc.child) {
+                    *slot = Some(arc);
+                }
+            }
+            by_child
+        } else {
+            Vec::new()
+        };
 
     if include_base {
         primitives.push(ScenePrimitive::FillRect {
@@ -193,10 +205,10 @@ pub fn build_tree_scene(
             let base_color = painter
                 .branch_color_override(*child)
                 .unwrap_or(branch_color);
-            if let Some(arc) = layout
-                .arc_segments
-                .iter()
-                .find(|a| a.child == *child && a.parent == *parent)
+            if let Some(arc) = circular_arcs_by_child
+                .get(*child)
+                .and_then(|arc| *arc)
+                .filter(|arc| arc.parent == *parent)
             {
                 if include_interaction && is_selected {
                     primitives.push(ScenePrimitive::StrokeCircularBranch {
@@ -425,42 +437,42 @@ pub fn build_tree_scene(
     } else {
         HashMap::new()
     };
-    let circular_tip_align_data =
-        if painter.align_tip_labels && matches!(layout.layout_type, TreeLayoutType::Circular) {
-            let center_world = layout
-                .arc_segments
-                .first()
-                .map(|arc| arc.center)
-                .or_else(|| tree.root.map(|root| layout.positions[root]))
-                .unwrap_or((layout.width * 0.5, layout.height * 0.5));
-            let center = to_local(to_screen(center_world));
-            let mut radii = Vec::new();
-            let mut max_radius = 0.0f32;
-            for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
-                let p = to_local(to_screen(layout.positions[node.id]));
-                let v = p - center;
-                let r = v.length();
-                max_radius = max_radius.max(r);
-                let dir = if r > 1e-6 {
-                    v / r
-                } else {
-                    let angle =
-                        compute_circular_outward_angle_screen(tree, layout, node, &to_screen);
-                    Vec2::new(angle.cos(), angle.sin())
-                };
-                radii.push((node.id, r, dir));
+    let circular_tip_align_data = if painter.align_tip_labels
+        && matches!(layout.layout_type, TreeLayoutType::Circular)
+    {
+        let center_world = layout
+            .arc_segments
+            .first()
+            .map(|arc| arc.center)
+            .or_else(|| tree.root.map(|root| layout.positions[root]))
+            .unwrap_or((layout.width * 0.5, layout.height * 0.5));
+        let center = to_local(to_screen(center_world));
+        let mut radii = Vec::new();
+        let mut max_radius = 0.0f32;
+        for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
+            let p = to_local(to_screen(layout.positions[node.id]));
+            let v = p - center;
+            let r = v.length();
+            max_radius = max_radius.max(r);
+            let dir = if r > 1e-6 {
+                v / r
+            } else {
+                let angle = compute_circular_outward_angle_screen(tree, layout, node, &to_screen);
+                Vec2::new(angle.cos(), angle.sin())
+            };
+            radii.push((node.id, r, dir));
+        }
+        let mut data = HashMap::new();
+        for (node_id, r, dir) in radii {
+            let ext = (max_radius - r).max(0.0);
+            if ext > 0.5 {
+                data.insert(node_id, (ext, dir));
             }
-            let mut data = HashMap::new();
-            for (node_id, r, dir) in radii {
-                let ext = (max_radius - r).max(0.0);
-                if ext > 0.5 {
-                    data.insert(node_id, (ext, dir));
-                }
-            }
-            data
-        } else {
-            HashMap::new()
-        };
+        }
+        data
+    } else {
+        HashMap::new()
+    };
     if include_decor && painter.align_tip_labels && !tip_extensions.is_empty() {
         for node in tree.nodes.iter().filter(|n| n.is_leaf()) {
             if let Some(&ext) = tip_extensions.get(&node.id) {
@@ -551,22 +563,6 @@ pub fn build_tree_scene(
         .filter_map(|seg| match (seg.kind, seg.child) {
             (RectSegmentKind::Horizontal, Some(child_id)) => Some((child_id, (seg.start, seg.end))),
             _ => None,
-        })
-        .collect();
-    let circular_arc_by_child: HashMap<NodeId, (f32, f32, f32, f32, f32)> = layout
-        .arc_segments
-        .iter()
-        .map(|arc| {
-            (
-                arc.child,
-                (
-                    arc.center.0,
-                    arc.center.1,
-                    arc.radius,
-                    arc.start_angle,
-                    arc.end_angle,
-                ),
-            )
         })
         .collect();
     let node_heights = if painter.show_node_labels
@@ -828,9 +824,12 @@ pub fn build_tree_scene(
                 if let Some(text) = painter.branch_label_text(node) {
                     match layout.layout_type {
                         TreeLayoutType::Circular => {
-                            if let Some((cx, cy, radius, start_angle, _end_angle)) =
-                                circular_arc_by_child.get(&node.id).copied()
+                            if let Some(arc) =
+                                circular_arcs_by_child.get(node.id).and_then(|arc| *arc)
                             {
+                                let (cx, cy) = arc.center;
+                                let radius = arc.radius;
+                                let start_angle = arc.start_angle;
                                 let shoulder = Pos2::new(
                                     cx + radius * start_angle.cos(),
                                     cy + radius * start_angle.sin(),
@@ -1377,6 +1376,36 @@ mod tests {
     use super::*;
     use crate::tree::layout::{TreeLayout, TreeLayoutType};
     use crate::tree::painter::{NodeLabelDisplay, TreePainter};
+
+    #[test]
+    fn circular_base_scene_contains_one_branch_per_edge() {
+        let newick = "(((A:1,B:1):1,C:1):1,D:1)Root;".to_string();
+        let phylo = PhyloTree::from_newick(&newick).expect("valid test newick");
+        let tree = Tree::new(1, Some("test".to_string()), newick, phylo);
+        let layout =
+            TreeLayout::from_tree(&tree, TreeLayoutType::Circular).expect("circular layout");
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 800.0));
+        let scene = build_tree_scene(
+            &tree,
+            &layout,
+            &TreePainter::default(),
+            &HashSet::new(),
+            &HashSet::new(),
+            rect,
+            rect,
+            rect,
+            1.0,
+            None,
+            SceneLayer::Base,
+        );
+
+        let branch_count = scene
+            .primitives
+            .iter()
+            .filter(|primitive| matches!(primitive, ScenePrimitive::StrokeCircularBranch { .. }))
+            .count();
+        assert_eq!(branch_count, layout.edges.len());
+    }
 
     #[test]
     fn circular_node_label_follows_root_to_node_ray() {

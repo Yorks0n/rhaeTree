@@ -21,10 +21,10 @@ use crate::tree::scene_graph::{build_tree_scene, SceneLayer};
 use crate::tree::skia_renderer::SkiaTreeRenderer;
 
 mod render_worker;
-use render_worker::{RenderJob, RenderWorker};
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
 use crate::tree::{NodeId, Tree, TreeBundle, TreeFileFormat};
 use crate::ui;
+use render_worker::{RenderJob, RenderWorker, SubmitStatus};
 
 pub struct FigTreeGui {
     config: AppConfig,
@@ -392,7 +392,6 @@ fn parse_selection_mode(s: &str) -> Option<SelectionMode> {
         _ => None,
     }
 }
-
 
 fn root_method_name(value: RootMethod) -> &'static str {
     match value {
@@ -2821,6 +2820,14 @@ impl FigTreeGui {
                 // Stale results (different job_id) are silently dropped.
             }
 
+            if self.render_worker.worker_dead && self.pending_job_id.is_some() {
+                self.pending_job_id = None;
+                self.pending_base_sig = None;
+                self.pending_decor_sig = None;
+                self.last_error =
+                    Some("Renderer crashed. Please restart the application.".to_string());
+            }
+
             let needs_base = self.base_tree_texture.is_none()
                 || self.base_render_signature != Some(base_signature);
             let needs_decor = self.decor_tree_texture.is_none()
@@ -2836,6 +2843,9 @@ impl FigTreeGui {
                 if self.render_worker.worker_dead {
                     self.last_error =
                         Some("Renderer crashed. Please restart the application.".to_string());
+                } else if self.render_worker.is_busy() {
+                    // Keep showing the previous textures. Once the in-flight job
+                    // completes, the next frame submits the latest render state.
                 } else if let Some((tree, layout)) = self.build_display_tree_layout() {
                     let selected_nodes = self.tree_viewer.selected_nodes().clone();
                     let selected_tips = self.tree_viewer.selected_tips().clone();
@@ -2872,16 +2882,28 @@ impl FigTreeGui {
                     let job_id = self.next_job_id;
                     self.next_job_id += 1;
 
-                    self.render_worker.try_send(RenderJob {
+                    match self.render_worker.try_send(RenderJob {
                         base: base_scene,
                         decor: decor_scene,
                         ppp,
                         scale,
                         job_id,
-                    });
-                    self.pending_job_id = Some(job_id);
-                    self.pending_base_sig = Some(base_signature);
-                    self.pending_decor_sig = Some(decor_signature);
+                    }) {
+                        SubmitStatus::Submitted => {
+                            self.pending_job_id = Some(job_id);
+                            self.pending_base_sig = Some(base_signature);
+                            self.pending_decor_sig = Some(decor_signature);
+                        }
+                        SubmitStatus::Busy => {
+                            // The job was not queued. Do not mark a non-existent
+                            // job as pending; retry with fresh state next frame.
+                        }
+                        SubmitStatus::Dead => {
+                            self.last_error = Some(
+                                "Renderer crashed. Please restart the application.".to_string(),
+                            );
+                        }
+                    }
                 } else {
                     ui.label("Tree structure unavailable for rendering.");
                     return;

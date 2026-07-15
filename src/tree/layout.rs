@@ -594,6 +594,32 @@ mod tests {
     }
 
     #[test]
+    fn rectangular_multifurcation_branches_include_parent_connector() {
+        let newick = "((A:1,B:1,C:1)Parent:1,D:1)Root;".to_string();
+        let phylo = PhyloTree::from_newick(&newick).expect("valid test newick");
+        let tree = Tree::new(1, Some("test".to_string()), newick, phylo);
+        let layout = TreeLayout::from_tree(&tree, TreeLayoutType::Rectangular).unwrap();
+        let parent = tree
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Parent"))
+            .expect("parent node");
+        let child_branches: Vec<_> = layout
+            .continuous_branches
+            .iter()
+            .filter(|branch| branch.parent == parent.id)
+            .collect();
+        assert_eq!(child_branches.len(), 3);
+        assert_eq!(
+            child_branches
+                .iter()
+                .filter(|branch| branch.points.len() == 3)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn test_circular_layout() {
         let tree = create_test_tree();
         let layout = TreeLayout::from_tree(&tree, TreeLayoutType::Circular).unwrap();
