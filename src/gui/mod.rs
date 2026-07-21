@@ -847,17 +847,30 @@ impl FigTreeGui {
 
     fn selected_branch_node(&self) -> Option<NodeId> {
         let tree = self.tree_viewer.current_tree()?;
-        let selected_nodes = self.tree_viewer.selected_nodes();
-        for node_id in selected_nodes {
-            if let Some(node) = tree.nodes.get(*node_id) {
-                if let Some(parent) = node.parent {
-                    if !selected_nodes.contains(&parent) {
-                        return Some(*node_id);
-                    }
-                }
+        let node_id = self.tree_viewer.selected_branch()?;
+        tree.nodes
+            .get(node_id)
+            .filter(|node| node.parent.is_some())
+            .map(|_| node_id)
+    }
+
+    fn copy_selected_subtree(&mut self, ctx: &egui::Context) {
+        let Some(node_id) = self.selected_branch_node() else {
+            return;
+        };
+        let Some(tree) = self.tree_viewer.current_tree() else {
+            return;
+        };
+
+        match io::serialize_subtree_newick(tree, node_id) {
+            Ok(newick) => {
+                ctx.copy_text(newick);
+                self.status = "Copied selected subtree as Newick.".to_string();
+            }
+            Err(error) => {
+                self.last_error = Some(format!("Failed to copy subtree: {error}"));
             }
         }
-        None
     }
 
     fn apply_filter(&mut self) {
@@ -3148,6 +3161,11 @@ impl eframe::App for FigTreeGui {
             }
         });
 
+        let copy_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
+        let copy_pressed = self.selected_branch_node().is_some()
+            && ctx.input_mut(|input| input.consume_shortcut(&copy_shortcut));
+        let save_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
+        let save_pressed = ctx.input_mut(|input| input.consume_shortcut(&save_shortcut));
         let (undo_pressed, redo_pressed) = ctx.input(|i| {
             let undo = i.modifiers.command && i.key_pressed(egui::Key::Z) && !i.modifiers.shift;
             let redo = (i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z))
@@ -3159,6 +3177,14 @@ impl eframe::App for FigTreeGui {
             ctx.request_repaint();
         } else if redo_pressed {
             self.redo_last_edit();
+            ctx.request_repaint();
+        }
+        if copy_pressed {
+            self.copy_selected_subtree(ctx);
+            ctx.request_repaint();
+        }
+        if save_pressed && self.tree_viewer.current_tree().is_some() {
+            self.save_rtr();
             ctx.request_repaint();
         }
 
@@ -3211,11 +3237,10 @@ impl eframe::App for FigTreeGui {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
 
+                    let save_button = egui::Button::new("Save")
+                        .shortcut_text(ctx.format_shortcut(&save_shortcut));
                     if ui
-                        .add_enabled(
-                            self.tree_viewer.current_tree().is_some(),
-                            egui::Button::new("Save"),
-                        )
+                        .add_enabled(self.tree_viewer.current_tree().is_some(), save_button)
                         .clicked()
                     {
                         self.save_rtr();
@@ -3294,6 +3319,17 @@ impl eframe::App for FigTreeGui {
                         .clicked()
                     {
                         self.redo_last_edit();
+                        ui.close();
+                        ctx.request_repaint();
+                    }
+                    ui.separator();
+                    let copy_button = egui::Button::new("Copy Subtree")
+                        .shortcut_text(ctx.format_shortcut(&copy_shortcut));
+                    if ui
+                        .add_enabled(self.selected_branch_node().is_some(), copy_button)
+                        .clicked()
+                    {
+                        self.copy_selected_subtree(ctx);
                         ui.close();
                         ctx.request_repaint();
                     }

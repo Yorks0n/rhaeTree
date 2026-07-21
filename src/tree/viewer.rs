@@ -28,6 +28,7 @@ pub struct TreeViewer {
     current_tree_index: usize,
     selected_nodes: HashSet<NodeId>,
     selected_tips: HashSet<NodeId>,
+    selected_branch: Option<NodeId>,
     selection_mode: SelectionMode,
     pub zoom: f32,
     pub vertical_expansion: f32,
@@ -49,6 +50,7 @@ impl TreeViewer {
             current_tree_index: 0,
             selected_nodes: HashSet::new(),
             selected_tips: HashSet::new(),
+            selected_branch: None,
             selection_mode: SelectionMode::Nodes,
             zoom: 1.0,
             vertical_expansion: 1.0,
@@ -127,9 +129,14 @@ impl TreeViewer {
         &self.selected_tips
     }
 
+    pub fn selected_branch(&self) -> Option<NodeId> {
+        self.selected_branch
+    }
+
     pub fn clear_selection(&mut self) {
         self.selected_nodes.clear();
         self.selected_tips.clear();
+        self.selected_branch = None;
     }
 
     pub fn selection_mode(&self) -> SelectionMode {
@@ -144,6 +151,7 @@ impl TreeViewer {
     pub fn select_branch_node(&mut self, node_id: NodeId) {
         self.clear_selection();
         self.selected_nodes.insert(node_id);
+        self.selected_branch = Some(node_id);
     }
 
     pub fn select_clade_nodes(&mut self, node_id: NodeId) {
@@ -162,6 +170,7 @@ impl TreeViewer {
             for id in nodes {
                 self.selected_nodes.insert(id);
             }
+            self.selected_branch = Some(node_id);
         }
     }
 
@@ -213,6 +222,12 @@ impl TreeViewer {
         }
         for id in tips {
             self.selected_tips.insert(id);
+        }
+        if self
+            .current_tree()
+            .is_some_and(|tree| tree.nodes.get(node_id).is_some())
+        {
+            self.selected_branch = Some(node_id);
         }
     }
 
@@ -466,10 +481,10 @@ impl TreeViewer {
         // Get the branch length between child and parent
         let branch_length = new_tree.nodes[child_node_id].length.unwrap_or(0.0);
 
-        // Create a virtual root node
+        // Create an anonymous virtual root node. The root is structural only and
+        // should not appear as a user-visible label when rendering or saving.
         let virtual_root_id = new_tree.nodes.len();
-        let virtual_root =
-            TreeNode::new(virtual_root_id, Some("__virtual_root__".to_string()), None);
+        let virtual_root = TreeNode::new(virtual_root_id, None, None);
 
         // Add the virtual root to nodes first
         new_tree.nodes.push(virtual_root);

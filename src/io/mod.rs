@@ -312,7 +312,7 @@ fn serialize_tree_newick(tree: &Tree) -> Result<String> {
 
     let mut state = vec![0u8; tree.nodes.len()];
     let mut out = String::with_capacity(tree.newick.len().max(tree.nodes.len() * 8));
-    append_newick_node(tree, root, &mut state, &mut out)?;
+    append_newick_node(tree, root, &mut state, &mut out, true)?;
     if state.iter().any(|visit| *visit != 2) {
         bail!(
             "tree #{} contains nodes unreachable from its root",
@@ -323,11 +323,27 @@ fn serialize_tree_newick(tree: &Tree) -> Result<String> {
     Ok(out)
 }
 
+pub(crate) fn serialize_subtree_newick(tree: &Tree, root: NodeId) -> Result<String> {
+    if root >= tree.nodes.len() {
+        bail!(
+            "tree #{} has an invalid subtree root node {root}",
+            tree.id + 1
+        );
+    }
+
+    let mut state = vec![0u8; tree.nodes.len()];
+    let mut out = String::with_capacity(tree.nodes.len() * 8);
+    append_newick_node(tree, root, &mut state, &mut out, false)?;
+    out.push(';');
+    Ok(out)
+}
+
 fn append_newick_node(
     tree: &Tree,
     node_id: NodeId,
     state: &mut [u8],
     out: &mut String,
+    include_serialized_node_ids: bool,
 ) -> Result<()> {
     let Some(node) = tree.nodes.get(node_id) else {
         bail!("tree #{} references missing node {node_id}", tree.id + 1);
@@ -348,7 +364,7 @@ fn append_newick_node(
             if index > 0 {
                 out.push(',');
             }
-            append_newick_node(tree, child_id, state, out)?;
+            append_newick_node(tree, child_id, state, out, include_serialized_node_ids)?;
         }
         out.push(')');
     }
@@ -356,7 +372,7 @@ fn append_newick_node(
     if let Some(name) = node.name.as_deref() {
         out.push_str(&quote_newick_name(name));
     }
-    append_node_annotations(node, out);
+    append_node_annotations(node, out, include_serialized_node_ids);
     if node.parent.is_some() {
         if let Some(length) = node.length {
             if !length.is_finite() {
@@ -386,9 +402,11 @@ fn quote_newick_name(name: &str) -> String {
     }
 }
 
-fn append_node_annotations(node: &TreeNode, out: &mut String) {
+fn append_node_annotations(node: &TreeNode, out: &mut String, include_serialized_node_id: bool) {
     let mut annotations = Vec::with_capacity(node.attributes.len() + 2);
-    annotations.push(format!("{SERIALIZED_NODE_ID_ATTRIBUTE}={}", node.id));
+    if include_serialized_node_id {
+        annotations.push(format!("{SERIALIZED_NODE_ID_ATTRIBUTE}={}", node.id));
+    }
     if let Some(label) = node.label.as_deref() {
         annotations.push(format!("label={}", format_annotation_value(label)));
     }
@@ -405,9 +423,11 @@ fn append_node_annotations(node: &TreeNode, out: &mut String) {
         annotations.push(format!("{key}={}", format_annotation_value(value)));
     }
 
-    out.push_str("[&");
-    out.push_str(&annotations.join(","));
-    out.push(']');
+    if !annotations.is_empty() {
+        out.push_str("[&");
+        out.push_str(&annotations.join(","));
+        out.push(']');
+    }
 }
 
 fn format_annotation_value(value: &str) -> String {
@@ -1064,6 +1084,22 @@ END;";
     }
 
     #[test]
+    fn serializes_subtree_as_portable_newick() {
+        let tree = parse_newick("((A:1,B:2)AB:3,C:4)Root;").unwrap().remove(0);
+        let subtree_root = tree
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("AB"))
+            .expect("internal node AB")
+            .id;
+
+        let newick = serialize_subtree_newick(&tree, subtree_root).unwrap();
+
+        assert_eq!(newick, "(A:1,B:2)AB:3;");
+        assert!(!newick.contains(SERIALIZED_NODE_ID_ATTRIBUTE));
+    }
+
+    #[test]
     fn save_rtr_round_trips_rerooted_topology_and_node_ids() {
         let tree = parse_newick("(((A:1,B:1)AB:1,C:1)ABC:1,D:1)Root;")
             .unwrap()
@@ -1078,6 +1114,9 @@ END;";
         viewer.set_trees(vec![tree]);
         viewer.reroot_at_branch(reroot_target);
         let expected = viewer.current_tree().expect("rerooted tree").clone();
+        let expected_root = &expected.nodes[expected.root.expect("virtual root")];
+        assert_eq!(expected_root.name, None);
+        assert_eq!(expected_root.label, None);
 
         let path = temp_rtr_path("reroot");
         let mut settings = BTreeMap::new();
@@ -1086,6 +1125,8 @@ END;";
             "#112233FF".to_string(),
         );
         save_rtr(&path, viewer.trees(), &settings).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("__virtual_root__"));
         let loaded = load_trees(&path).unwrap();
         let _ = fs::remove_file(&path);
         let actual = &loaded.trees[0];
