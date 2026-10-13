@@ -2486,12 +2486,11 @@ impl FigTreeGui {
         self.transform_branches_enabled.hash(h);
         self.branch_transform.hash(h);
         self.tree_viewer.current_tree_index().hash(h);
-        self.tree_viewer.zoom.to_bits().hash(h);
+        // Zoom is a view transform (GPU scale); do not bake it into raster signatures.
         self.tree_viewer.vertical_expansion().to_bits().hash(h);
         canvas_width.to_bits().hash(h);
         canvas_height.to_bits().hash(h);
         self.pixels_per_point.to_bits().hash(h);
-        self.is_live_adjusting.hash(h);
     }
 
     fn base_render_signature(
@@ -2727,13 +2726,8 @@ impl FigTreeGui {
             1.0
         };
 
-        let base = edge_scale.min(area_scale).clamp(0.1, 1.0);
-        // Decision 3A: halve resolution during live slider adjustment for faster preview.
-        if self.is_live_adjusting {
-            (base * 0.5).clamp(0.1, 1.0)
-        } else {
-            base
-        }
+        // Zoom no longer grows the raster target; keep full quality within pixel caps.
+        edge_scale.min(area_scale).clamp(0.1, 1.0)
     }
 
     fn draw_tree_canvas(&mut self, ui: &mut egui::Ui) {
@@ -2771,32 +2765,48 @@ impl FigTreeGui {
             } else {
                 1.0
             };
-            let canvas_width = available_width * zoom;
-            let canvas_height = desired_height * zoom;
+
+            // Logical (scroll) size grows with zoom; raster pixel budget stays at zoom=1.
+            let display_width = available_width * zoom;
+            let display_height = desired_height * zoom;
+            let raster_width = available_width;
+            let raster_height = desired_height;
 
             let (response, painter) = ui.allocate_painter(
-                egui::vec2(canvas_width, canvas_height),
+                egui::vec2(display_width, display_height),
                 egui::Sense::click(),
             );
-            let rect = response.rect;
+            let display_rect = response.rect;
 
-            let margin_x = (canvas_width * 0.05).max(20.0).min(60.0);
-            let margin_y = (canvas_height * 0.05).max(20.0).min(40.0);
-            let margin = egui::Vec2::new(margin_x, margin_y);
-            let inner = {
-                let candidate = rect.shrink2(margin);
+            let margin_x = (raster_width * 0.05).max(20.0).min(60.0);
+            let margin_y = (raster_height * 0.05).max(20.0).min(40.0);
+            let raster_margin = egui::Vec2::new(margin_x, margin_y);
+            let raster_rect =
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(raster_width, raster_height));
+            let raster_inner = {
+                let candidate = raster_rect.shrink2(raster_margin);
                 if candidate.is_positive() {
                     candidate
                 } else {
-                    rect
+                    raster_rect
+                }
+            };
+            // Hit-testing uses the zoomed display inner so screen coords match GPU-scaled textures.
+            let display_inner = {
+                let candidate = display_rect.shrink2(raster_margin * zoom);
+                if candidate.is_positive() {
+                    candidate
+                } else {
+                    display_rect
                 }
             };
 
-            let base_signature = self.base_render_signature(tree_ref, canvas_width, canvas_height);
+            let base_signature =
+                self.base_render_signature(tree_ref, raster_width, raster_height);
             let decor_signature =
-                self.decor_render_signature(tree_ref, canvas_width, canvas_height);
+                self.decor_render_signature(tree_ref, raster_width, raster_height);
             let interaction_signature =
-                self.interaction_render_signature(tree_ref, canvas_width, canvas_height);
+                self.interaction_render_signature(tree_ref, raster_width, raster_height);
 
             // ── Poll background worker for completed base+decor result ──────────────
             if let Some(result) = self.render_worker.try_recv() {
@@ -2852,7 +2862,9 @@ impl FigTreeGui {
             let already_dispatched = self.pending_base_sig == Some(base_signature)
                 && self.pending_decor_sig == Some(decor_signature);
 
-            if (needs_base || needs_decor) && !already_dispatched {
+            // During live slider drag: keep showing previous textures (GPU-scaled by
+            // current zoom into display_rect). Submit one full-quality job when settled.
+            if (needs_base || needs_decor) && !already_dispatched && !self.is_live_adjusting {
                 if self.render_worker.worker_dead {
                     self.last_error =
                         Some("Renderer crashed. Please restart the application.".to_string());
@@ -2862,7 +2874,7 @@ impl FigTreeGui {
                 } else if let Some((tree, layout)) = self.build_display_tree_layout() {
                     let selected_nodes = self.tree_viewer.selected_nodes().clone();
                     let selected_tips = self.tree_viewer.selected_tips().clone();
-                    let scale = self.render_resolution_scale(canvas_width, canvas_height);
+                    let scale = self.render_resolution_scale(raster_width, raster_height);
                     let ppp = self.pixels_per_point;
 
                     let base_scene = build_tree_scene(
@@ -2871,9 +2883,9 @@ impl FigTreeGui {
                         &self.tree_painter,
                         &selected_nodes,
                         &selected_tips,
-                        rect,
-                        inner,
-                        inner,
+                        raster_rect,
+                        raster_inner,
+                        raster_inner,
                         1.0,
                         Some(self.tree_viewer.selection_mode()),
                         SceneLayer::Base,
@@ -2884,9 +2896,9 @@ impl FigTreeGui {
                         &self.tree_painter,
                         &selected_nodes,
                         &selected_tips,
-                        rect,
-                        inner,
-                        inner,
+                        raster_rect,
+                        raster_inner,
+                        raster_inner,
                         1.0,
                         Some(self.tree_viewer.selection_mode()),
                         SceneLayer::Decor,
@@ -2924,19 +2936,19 @@ impl FigTreeGui {
             }
 
             // ── Render interaction layer synchronously (fast: selection only) ───────
-            if needs_interaction {
+            if needs_interaction && !self.is_live_adjusting {
                 if let Some((tree, layout)) = self.build_display_tree_layout() {
                     let selected_nodes = self.tree_viewer.selected_nodes().clone();
                     let selected_tips = self.tree_viewer.selected_tips().clone();
                     match self.render_with_current_backend(
                         &tree,
                         &layout,
-                        rect,
-                        inner,
+                        raster_rect,
+                        raster_inner,
                         &selected_nodes,
                         &selected_tips,
-                        canvas_width,
-                        canvas_height,
+                        raster_width,
+                        raster_height,
                         SceneLayer::Interaction,
                     ) {
                         Ok(output) => {
@@ -2960,12 +2972,12 @@ impl FigTreeGui {
                 }
             }
 
-            // ── Draw textures (or "Rendering..." placeholder) ────────────────────────
+            // ── Draw textures scaled into the zoomed display rect ────────────────────
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             if self.base_tree_texture.is_none() && self.pending_job_id.is_some() {
                 // Decision 2A: first load — no texture yet, job in flight.
                 painter.text(
-                    rect.center(),
+                    display_rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "Rendering...",
                     egui::FontId::proportional(16.0),
@@ -2980,22 +2992,26 @@ impl FigTreeGui {
                 .into_iter()
                 .flatten()
                 {
-                    painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
+                    painter.image(texture.id(), display_rect, uv, egui::Color32::WHITE);
                 }
             }
 
+            // Tip hits are in raster-local space; map to screen with the same zoom scale.
             let tip_label_hits: Vec<_> = self
                 .cached_tip_label_hits_local
                 .iter()
                 .cloned()
                 .map(|mut hit| {
-                    hit.rect = hit.rect.translate(rect.min.to_vec2());
-                    hit.anchor_pos += rect.min.to_vec2();
+                    hit.rect = egui::Rect::from_min_max(
+                        display_rect.min + hit.rect.min.to_vec2() * zoom,
+                        display_rect.min + hit.rect.max.to_vec2() * zoom,
+                    );
+                    hit.anchor_pos = display_rect.min + hit.anchor_pos.to_vec2() * zoom;
                     hit
                 })
                 .collect();
 
-            self.tree_canvas_rect = Some(rect);
+            self.tree_canvas_rect = Some(display_rect);
 
             if self.pending_filter_auto_scroll {
                 let selected_tips = self.tree_viewer.selected_tips();
@@ -3018,7 +3034,7 @@ impl FigTreeGui {
                         let mode = self.tree_viewer.selection_mode();
                         let to_screen = self
                             .tree_painter
-                            .create_to_screen_transform(&tree, &layout, inner);
+                            .create_to_screen_transform(&tree, &layout, display_inner);
 
                         fn distance_to_segment(
                             point: egui::Pos2,
@@ -3038,7 +3054,7 @@ impl FigTreeGui {
                         if matches!(mode, SelectionMode::Taxa | SelectionMode::Tips) {
                             if let Some(hit) = tip_label_hits
                                 .iter()
-                                .find(|hit| hit.contains(pointer_pos, 2.0))
+                                .find(|hit| hit.contains(pointer_pos, 2.0 * zoom))
                             {
                                 self.tree_viewer.select_tip_label(hit.node_id);
                                 handled = true;
@@ -3046,7 +3062,7 @@ impl FigTreeGui {
                         }
 
                         if !handled && matches!(mode, SelectionMode::Taxa | SelectionMode::Tips) {
-                            let tip_hit_radius = self.tree_painter.node_radius + 6.0;
+                            let tip_hit_radius = (self.tree_painter.node_radius + 6.0) * zoom;
                             if let Some(closest_tip) = tree
                                 .external_nodes()
                                 .iter()
@@ -3069,7 +3085,7 @@ impl FigTreeGui {
                         }
 
                         if !handled {
-                            let branch_hit_radius = 8.0_f32;
+                            let branch_hit_radius = 8.0_f32 * zoom;
                             let mut best_branch = None;
                             let mut best_distance = f32::INFINITY;
 
