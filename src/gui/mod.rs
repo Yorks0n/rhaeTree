@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 use std::{
     collections::hash_map::DefaultHasher,
     collections::{BTreeMap, HashSet},
@@ -97,6 +98,18 @@ pub struct FigTreeGui {
     pending_decor_sig: Option<u64>,
     next_job_id: u64,
     is_live_adjusting: bool,
+    /// Earliest Instant when a settle (high-res) re-render may run after zoom/expansion.
+    view_settle_at: Option<Instant>,
+    /// Logical canvas size of the textures currently shown (base/decor).
+    texture_raster_size: Option<egui::Vec2>,
+    /// Logical canvas size of the in-flight base+decor job.
+    pending_raster_size: Option<egui::Vec2>,
+    /// When Some, textures cover only a viewport tile whose top-left is this
+    /// offset in display-local coordinates (relative to display_rect.min).
+    /// None means the textures cover the full scrollable canvas.
+    texture_viewport_origin: Option<egui::Vec2>,
+    /// Viewport origin for the in-flight base+decor job (mirrors texture_viewport_origin).
+    pending_viewport_origin: Option<egui::Vec2>,
     /// Path queued by an external "Open With" request that we couldn't load
     /// immediately because the current edit has unsaved changes. Cleared
     /// when the user resolves the confirmation dialog.
@@ -573,8 +586,14 @@ fn parse_tip_label_number_format(s: &str) -> Option<TipLabelNumberFormat> {
 }
 
 impl FigTreeGui {
-    const MAX_RENDER_TEXTURE_EDGE: f32 = 8192.0;
-    const MAX_RENDER_PIXELS: f32 = 8_000_000.0;
+    const MAX_RENDER_TEXTURE_EDGE: f32 = 12288.0;
+    const MAX_RENDER_PIXELS: f32 = 16_000_000.0;
+    /// Extra points around the visible clip when viewport-settling (reduces edge shimmer).
+    const VIEWPORT_SETTLE_PAD: f32 = 64.0;
+    /// Pan delta (points) that invalidates a viewport settle.
+    const VIEWPORT_PAN_THRESHOLD: f32 = 4.0;
+    /// Idle time after the last zoom/expansion change before high-res settle.
+    const VIEW_SETTLE_DEBOUNCE: Duration = Duration::from_millis(120);
     const MAX_UNDO_STEPS: usize = 5;
 
     pub fn new(_cc: &eframe::CreationContext<'_>, config: AppConfig) -> Self {
@@ -667,6 +686,11 @@ impl FigTreeGui {
             pending_decor_sig: None,
             next_job_id: 0,
             is_live_adjusting: false,
+            view_settle_at: None,
+            texture_raster_size: None,
+            pending_raster_size: None,
+            texture_viewport_origin: None,
+            pending_viewport_origin: None,
             pending_external_open: None,
         };
 
@@ -787,6 +811,10 @@ impl FigTreeGui {
         self.decor_tree_texture = None;
         self.interaction_tree_texture = None;
         self.cached_tip_label_hits_local.clear();
+        self.texture_raster_size = None;
+        self.pending_raster_size = None;
+        self.texture_viewport_origin = None;
+        self.pending_viewport_origin = None;
     }
 
     fn record_undo_step(&mut self) {
@@ -2480,18 +2508,29 @@ impl FigTreeGui {
         tree: &crate::tree::Tree,
         canvas_width: f32,
         canvas_height: f32,
+        viewport_origin: Option<egui::Vec2>,
     ) {
         Self::hash_tree(h, tree);
         self.current_layout.hash(h);
         self.transform_branches_enabled.hash(h);
         self.branch_transform.hash(h);
         self.tree_viewer.current_tree_index().hash(h);
-        self.tree_viewer.zoom.to_bits().hash(h);
+        // Zoom is baked into canvas_width/height only on settle; live preview omits it.
         self.tree_viewer.vertical_expansion().to_bits().hash(h);
         canvas_width.to_bits().hash(h);
         canvas_height.to_bits().hash(h);
         self.pixels_per_point.to_bits().hash(h);
-        self.is_live_adjusting.hash(h);
+        // Viewport-tile settles must differ by origin even when size matches.
+        match viewport_origin {
+            Some(origin) => {
+                true.hash(h);
+                origin.x.to_bits().hash(h);
+                origin.y.to_bits().hash(h);
+            }
+            None => {
+                false.hash(h);
+            }
+        }
     }
 
     fn base_render_signature(
@@ -2499,9 +2538,16 @@ impl FigTreeGui {
         tree: &crate::tree::Tree,
         canvas_width: f32,
         canvas_height: f32,
+        viewport_origin: Option<egui::Vec2>,
     ) -> u64 {
         let mut hasher = DefaultHasher::new();
-        self.hash_shared_render_state(&mut hasher, tree, canvas_width, canvas_height);
+        self.hash_shared_render_state(
+            &mut hasher,
+            tree,
+            canvas_width,
+            canvas_height,
+            viewport_origin,
+        );
         self.tree_painter
             .branch_stroke
             .width
@@ -2520,9 +2566,16 @@ impl FigTreeGui {
         tree: &crate::tree::Tree,
         canvas_width: f32,
         canvas_height: f32,
+        viewport_origin: Option<egui::Vec2>,
     ) -> u64 {
         let mut hasher = DefaultHasher::new();
-        self.hash_shared_render_state(&mut hasher, tree, canvas_width, canvas_height);
+        self.hash_shared_render_state(
+            &mut hasher,
+            tree,
+            canvas_width,
+            canvas_height,
+            viewport_origin,
+        );
 
         Self::hash_color(&mut hasher, self.tree_painter.label_color);
         Self::hash_color(&mut hasher, self.tree_painter.branch_label_color);
@@ -2620,9 +2673,16 @@ impl FigTreeGui {
         tree: &crate::tree::Tree,
         canvas_width: f32,
         canvas_height: f32,
+        viewport_origin: Option<egui::Vec2>,
     ) -> u64 {
         let mut hasher = DefaultHasher::new();
-        self.hash_shared_render_state(&mut hasher, tree, canvas_width, canvas_height);
+        self.hash_shared_render_state(
+            &mut hasher,
+            tree,
+            canvas_width,
+            canvas_height,
+            viewport_origin,
+        );
 
         self.tree_viewer.selection_mode().hash(&mut hasher);
         Self::hash_node_set(&mut hasher, self.tree_viewer.selected_nodes());
@@ -2727,13 +2787,8 @@ impl FigTreeGui {
             1.0
         };
 
-        let base = edge_scale.min(area_scale).clamp(0.1, 1.0);
-        // Decision 3A: halve resolution during live slider adjustment for faster preview.
-        if self.is_live_adjusting {
-            (base * 0.5).clamp(0.1, 1.0)
-        } else {
-            base
-        }
+        // Settle may grow the logical canvas with zoom; clamp pixels to avoid OOM.
+        edge_scale.min(area_scale).clamp(0.1, 1.0)
     }
 
     fn draw_tree_canvas(&mut self, ui: &mut egui::Ui) {
@@ -2771,32 +2826,223 @@ impl FigTreeGui {
             } else {
                 1.0
             };
-            let canvas_width = available_width * zoom;
-            let canvas_height = desired_height * zoom;
+
+            // Logical (scroll) size always grows with zoom.
+            let display_width = available_width * zoom;
+            let display_height = desired_height * zoom;
+
+            // Live / debounce: keep Skia at zoom=1 (GPU scales). Settled: full-canvas
+            // when the pixel budget allows, otherwise a sharp viewport tile.
+            let now = Instant::now();
+            let settle_ready = self
+                .view_settle_at
+                .map_or(true, |deadline| now >= deadline);
+            let mut use_settled_raster = !self.is_live_adjusting && settle_ready;
+            if !use_settled_raster {
+                if let Some(deadline) = self.view_settle_at {
+                    if now < deadline {
+                        ui.ctx().request_repaint_after(deadline.saturating_duration_since(now));
+                    }
+                }
+            }
 
             let (response, painter) = ui.allocate_painter(
-                egui::vec2(canvas_width, canvas_height),
+                egui::vec2(display_width, display_height),
                 egui::Sense::click(),
             );
-            let rect = response.rect;
+            let display_rect = response.rect;
 
-            let margin_x = (canvas_width * 0.05).max(20.0).min(60.0);
-            let margin_y = (canvas_height * 0.05).max(20.0).min(40.0);
-            let margin = egui::Vec2::new(margin_x, margin_y);
-            let inner = {
-                let candidate = rect.shrink2(margin);
+            // Visible region in display-local coordinates (ScrollArea clip ∩ canvas).
+            let full_canvas_local = egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(display_width, display_height),
+            );
+            let visible_screen = ui.clip_rect().intersect(display_rect);
+            let visible_local = if visible_screen.is_positive() {
+                egui::Rect::from_min_max(
+                    egui::pos2(
+                        visible_screen.min.x - display_rect.min.x,
+                        visible_screen.min.y - display_rect.min.y,
+                    ),
+                    egui::pos2(
+                        visible_screen.max.x - display_rect.min.x,
+                        visible_screen.max.y - display_rect.min.y,
+                    ),
+                )
+                .intersect(full_canvas_local)
+            } else {
+                full_canvas_local
+            };
+
+            // Full-canvas settle would be clamped → prefer viewport settle instead.
+            let full_settle_scale = self.render_resolution_scale(display_width, display_height);
+            let want_viewport_settle = full_settle_scale < 0.999;
+
+            // Live zoom with a viewport tile: drop it so we regenerate a 1× preview.
+            // Inline clears (disjoint fields) to avoid conflicting with `tree_ref` borrow.
+            if self.is_live_adjusting && self.texture_viewport_origin.is_some() {
+                self.base_render_signature = None;
+                self.decor_render_signature = None;
+                self.interaction_render_signature = None;
+                self.base_tree_texture = None;
+                self.decor_tree_texture = None;
+                self.interaction_tree_texture = None;
+                self.cached_tip_label_hits_local.clear();
+                self.texture_raster_size = None;
+                self.pending_raster_size = None;
+                self.texture_viewport_origin = None;
+                self.pending_viewport_origin = None;
+            }
+
+            // Pan away from a settled viewport tile → debounce and fall back to preview.
+            if want_viewport_settle {
+                if let (Some(origin), Some(tex_size)) =
+                    (self.texture_viewport_origin, self.texture_raster_size)
+                {
+                    let covered =
+                        egui::Rect::from_min_size(egui::pos2(origin.x, origin.y), tex_size);
+                    let still_covered = covered.width() > 1.0
+                        && covered.height() > 1.0
+                        && visible_local.is_positive()
+                        && covered.contains_rect(visible_local.shrink(Self::VIEWPORT_PAN_THRESHOLD));
+                    if !still_covered {
+                        self.view_settle_at =
+                            Some(Instant::now() + Self::VIEW_SETTLE_DEBOUNCE);
+                        use_settled_raster = false;
+                        self.base_render_signature = None;
+                        self.decor_render_signature = None;
+                        self.interaction_render_signature = None;
+                        self.base_tree_texture = None;
+                        self.decor_tree_texture = None;
+                        self.interaction_tree_texture = None;
+                        self.cached_tip_label_hits_local.clear();
+                        self.texture_raster_size = None;
+                        self.pending_raster_size = None;
+                        self.texture_viewport_origin = None;
+                        self.pending_viewport_origin = None;
+                        if let Some(deadline) = self.view_settle_at {
+                            ui.ctx().request_repaint_after(
+                                deadline.saturating_duration_since(Instant::now()),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Margins are always derived from the full zoomed canvas so layout matches
+            // full-canvas settle (viewport tiles share the same transform_inner).
+            let full_margin = egui::vec2(
+                (display_width * 0.05).max(20.0).min(60.0),
+                (display_height * 0.05).max(20.0).min(40.0),
+            );
+            let full_inner = {
+                let candidate = full_canvas_local.shrink2(full_margin);
                 if candidate.is_positive() {
                     candidate
                 } else {
-                    rect
+                    full_canvas_local
                 }
             };
 
-            let base_signature = self.base_render_signature(tree_ref, canvas_width, canvas_height);
-            let decor_signature =
-                self.decor_render_signature(tree_ref, canvas_width, canvas_height);
-            let interaction_signature =
-                self.interaction_render_signature(tree_ref, canvas_width, canvas_height);
+            // Choose raster mode: preview / full settle / viewport settle.
+            let viewport_origin: Option<egui::Vec2>;
+            let (raster_width, raster_height, raster_rect, scene_inner);
+            if use_settled_raster && want_viewport_settle && visible_local.is_positive() {
+                // Reuse the existing tile while the visible clip still fits inside it
+                // (avoids re-raster on tiny pans within the pad).
+                let reuse_tile = self.texture_viewport_origin.zip(self.texture_raster_size).and_then(
+                    |(origin, tex_size)| {
+                        let covered =
+                            egui::Rect::from_min_size(egui::pos2(origin.x, origin.y), tex_size);
+                        if covered.width() > 1.0
+                            && covered.height() > 1.0
+                            && covered.contains_rect(
+                                visible_local.shrink(Self::VIEWPORT_PAN_THRESHOLD),
+                            )
+                        {
+                            Some(covered)
+                        } else {
+                            None
+                        }
+                    },
+                );
+                let tile = if let Some(covered) = reuse_tile {
+                    covered
+                } else {
+                    let mut tile = visible_local.expand(Self::VIEWPORT_SETTLE_PAD);
+                    tile = tile.intersect(full_canvas_local);
+                    if !tile.is_positive() {
+                        tile = visible_local;
+                    }
+                    egui::Rect::from_min_max(
+                        egui::pos2(tile.min.x.max(0.0), tile.min.y.max(0.0)),
+                        egui::pos2(
+                            tile.max.x.min(display_width).max(tile.min.x + 1.0),
+                            tile.max.y.min(display_height).max(tile.min.y + 1.0),
+                        ),
+                    )
+                };
+                raster_width = tile.width().max(1.0);
+                raster_height = tile.height().max(1.0);
+                raster_rect = tile;
+                scene_inner = full_inner;
+                viewport_origin = Some(egui::vec2(tile.min.x, tile.min.y));
+            } else if use_settled_raster {
+                raster_width = display_width;
+                raster_height = display_height;
+                raster_rect = full_canvas_local;
+                scene_inner = full_inner;
+                viewport_origin = None;
+            } else {
+                raster_width = available_width;
+                raster_height = desired_height;
+                let preview_margin = egui::vec2(
+                    (raster_width * 0.05).max(20.0).min(60.0),
+                    (raster_height * 0.05).max(20.0).min(40.0),
+                );
+                raster_rect = egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(raster_width, raster_height),
+                );
+                scene_inner = {
+                    let candidate = raster_rect.shrink2(preview_margin);
+                    if candidate.is_positive() {
+                        candidate
+                    } else {
+                        raster_rect
+                    }
+                };
+                viewport_origin = None;
+            }
+
+            // Hit-testing transform in display space (full canvas margins).
+            let display_inner = {
+                let candidate = display_rect.shrink2(full_margin);
+                if candidate.is_positive() {
+                    candidate
+                } else {
+                    display_rect
+                }
+            };
+
+            let base_signature = self.base_render_signature(
+                tree_ref,
+                raster_width,
+                raster_height,
+                viewport_origin,
+            );
+            let decor_signature = self.decor_render_signature(
+                tree_ref,
+                raster_width,
+                raster_height,
+                viewport_origin,
+            );
+            let interaction_signature = self.interaction_render_signature(
+                tree_ref,
+                raster_width,
+                raster_height,
+                viewport_origin,
+            );
 
             // ── Poll background worker for completed base+decor result ──────────────
             if let Some(result) = self.render_worker.try_recv() {
@@ -2825,10 +3071,14 @@ impl FigTreeGui {
                     }
                     self.cached_tip_label_hits_local = result.decor.tip_label_hits;
                     self.decor_render_signature = self.pending_decor_sig;
+                    self.texture_raster_size = self.pending_raster_size;
+                    self.texture_viewport_origin = self.pending_viewport_origin;
 
                     self.pending_job_id = None;
                     self.pending_base_sig = None;
                     self.pending_decor_sig = None;
+                    self.pending_raster_size = None;
+                    self.pending_viewport_origin = None;
                 }
                 // Stale results (different job_id) are silently dropped.
             }
@@ -2837,6 +3087,8 @@ impl FigTreeGui {
                 self.pending_job_id = None;
                 self.pending_base_sig = None;
                 self.pending_decor_sig = None;
+                self.pending_raster_size = None;
+                self.pending_viewport_origin = None;
                 self.last_error =
                     Some("Renderer crashed. Please restart the application.".to_string());
             }
@@ -2852,7 +3104,11 @@ impl FigTreeGui {
             let already_dispatched = self.pending_base_sig == Some(base_signature)
                 && self.pending_decor_sig == Some(decor_signature);
 
-            if (needs_base || needs_decor) && !already_dispatched {
+            // During live/debounce: keep showing previous textures (GPU-scaled into
+            // display_rect). On settle, signatures include zoomed size → one sharp job.
+            // Allow a preview-sized first frame if we have no texture yet.
+            let allow_raster = use_settled_raster || self.base_tree_texture.is_none();
+            if (needs_base || needs_decor) && !already_dispatched && allow_raster {
                 if self.render_worker.worker_dead {
                     self.last_error =
                         Some("Renderer crashed. Please restart the application.".to_string());
@@ -2862,7 +3118,7 @@ impl FigTreeGui {
                 } else if let Some((tree, layout)) = self.build_display_tree_layout() {
                     let selected_nodes = self.tree_viewer.selected_nodes().clone();
                     let selected_tips = self.tree_viewer.selected_tips().clone();
-                    let scale = self.render_resolution_scale(canvas_width, canvas_height);
+                    let scale = self.render_resolution_scale(raster_width, raster_height);
                     let ppp = self.pixels_per_point;
 
                     let base_scene = build_tree_scene(
@@ -2871,9 +3127,9 @@ impl FigTreeGui {
                         &self.tree_painter,
                         &selected_nodes,
                         &selected_tips,
-                        rect,
-                        inner,
-                        inner,
+                        raster_rect,
+                        scene_inner,
+                        scene_inner,
                         1.0,
                         Some(self.tree_viewer.selection_mode()),
                         SceneLayer::Base,
@@ -2884,9 +3140,9 @@ impl FigTreeGui {
                         &self.tree_painter,
                         &selected_nodes,
                         &selected_tips,
-                        rect,
-                        inner,
-                        inner,
+                        raster_rect,
+                        scene_inner,
+                        scene_inner,
                         1.0,
                         Some(self.tree_viewer.selection_mode()),
                         SceneLayer::Decor,
@@ -2906,6 +3162,9 @@ impl FigTreeGui {
                             self.pending_job_id = Some(job_id);
                             self.pending_base_sig = Some(base_signature);
                             self.pending_decor_sig = Some(decor_signature);
+                            self.pending_raster_size =
+                                Some(egui::vec2(raster_width, raster_height));
+                            self.pending_viewport_origin = viewport_origin;
                         }
                         SubmitStatus::Busy => {
                             // The job was not queued. Do not mark a non-existent
@@ -2924,19 +3183,24 @@ impl FigTreeGui {
             }
 
             // ── Render interaction layer synchronously (fast: selection only) ───────
-            if needs_interaction {
+            // Wait for base/decor to match the current raster mode so we do not
+            // stretch a viewport-sized interaction texture over a full-canvas preview.
+            let layers_in_sync = !needs_base
+                && !needs_decor
+                && self.texture_viewport_origin == viewport_origin;
+            if needs_interaction && allow_raster && (layers_in_sync || self.base_tree_texture.is_none()) {
                 if let Some((tree, layout)) = self.build_display_tree_layout() {
                     let selected_nodes = self.tree_viewer.selected_nodes().clone();
                     let selected_tips = self.tree_viewer.selected_tips().clone();
                     match self.render_with_current_backend(
                         &tree,
                         &layout,
-                        rect,
-                        inner,
+                        raster_rect,
+                        scene_inner,
                         &selected_nodes,
                         &selected_tips,
-                        canvas_width,
-                        canvas_height,
+                        raster_width,
+                        raster_height,
                         SceneLayer::Interaction,
                     ) {
                         Ok(output) => {
@@ -2960,18 +3224,25 @@ impl FigTreeGui {
                 }
             }
 
-            // ── Draw textures (or "Rendering..." placeholder) ────────────────────────
+            // ── Draw textures (full canvas stretch, or viewport tile at origin) ─────
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             if self.base_tree_texture.is_none() && self.pending_job_id.is_some() {
                 // Decision 2A: first load — no texture yet, job in flight.
                 painter.text(
-                    rect.center(),
+                    display_rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "Rendering...",
                     egui::FontId::proportional(16.0),
                     egui::Color32::GRAY,
                 );
             } else {
+                let draw_rect = if let (Some(origin), Some(tex_size)) =
+                    (self.texture_viewport_origin, self.texture_raster_size)
+                {
+                    egui::Rect::from_min_size(display_rect.min + origin, tex_size)
+                } else {
+                    display_rect
+                };
                 for texture in [
                     self.base_tree_texture.as_ref(),
                     self.decor_tree_texture.as_ref(),
@@ -2980,22 +3251,54 @@ impl FigTreeGui {
                 .into_iter()
                 .flatten()
                 {
-                    painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
+                    painter.image(texture.id(), draw_rect, uv, egui::Color32::WHITE);
                 }
             }
 
-            let tip_label_hits: Vec<_> = self
-                .cached_tip_label_hits_local
-                .iter()
-                .cloned()
-                .map(|mut hit| {
-                    hit.rect = hit.rect.translate(rect.min.to_vec2());
-                    hit.anchor_pos += rect.min.to_vec2();
-                    hit
-                })
-                .collect();
+            // Tip hits are in the texture's logical raster space; map to display.
+            // Viewport tiles are 1:1 with an origin offset; full/preview may be scaled.
+            let tip_label_hits: Vec<_> = {
+                let tex = self
+                    .texture_raster_size
+                    .unwrap_or(egui::vec2(raster_width, raster_height));
+                let origin = self.texture_viewport_origin.unwrap_or(egui::Vec2::ZERO);
+                let is_viewport = self.texture_viewport_origin.is_some();
+                let hit_scale = if is_viewport {
+                    egui::vec2(1.0, 1.0)
+                } else {
+                    egui::vec2(
+                        display_width / tex.x.max(1.0),
+                        display_height / tex.y.max(1.0),
+                    )
+                };
+                let base = display_rect.min + origin;
+                self.cached_tip_label_hits_local
+                    .iter()
+                    .cloned()
+                    .map(|mut hit| {
+                        hit.rect = egui::Rect::from_min_max(
+                            base
+                                + egui::vec2(
+                                    hit.rect.min.x * hit_scale.x,
+                                    hit.rect.min.y * hit_scale.y,
+                                ),
+                            base
+                                + egui::vec2(
+                                    hit.rect.max.x * hit_scale.x,
+                                    hit.rect.max.y * hit_scale.y,
+                                ),
+                        );
+                        hit.anchor_pos = base
+                            + egui::vec2(
+                                hit.anchor_pos.x * hit_scale.x,
+                                hit.anchor_pos.y * hit_scale.y,
+                            );
+                        hit
+                    })
+                    .collect()
+            };
 
-            self.tree_canvas_rect = Some(rect);
+            self.tree_canvas_rect = Some(display_rect);
 
             if self.pending_filter_auto_scroll {
                 let selected_tips = self.tree_viewer.selected_tips();
@@ -3018,7 +3321,7 @@ impl FigTreeGui {
                         let mode = self.tree_viewer.selection_mode();
                         let to_screen = self
                             .tree_painter
-                            .create_to_screen_transform(&tree, &layout, inner);
+                            .create_to_screen_transform(&tree, &layout, display_inner);
 
                         fn distance_to_segment(
                             point: egui::Pos2,
@@ -3038,7 +3341,7 @@ impl FigTreeGui {
                         if matches!(mode, SelectionMode::Taxa | SelectionMode::Tips) {
                             if let Some(hit) = tip_label_hits
                                 .iter()
-                                .find(|hit| hit.contains(pointer_pos, 2.0))
+                                .find(|hit| hit.contains(pointer_pos, 2.0 * zoom))
                             {
                                 self.tree_viewer.select_tip_label(hit.node_id);
                                 handled = true;
@@ -3046,7 +3349,7 @@ impl FigTreeGui {
                         }
 
                         if !handled && matches!(mode, SelectionMode::Taxa | SelectionMode::Tips) {
-                            let tip_hit_radius = self.tree_painter.node_radius + 6.0;
+                            let tip_hit_radius = (self.tree_painter.node_radius + 6.0) * zoom;
                             if let Some(closest_tip) = tree
                                 .external_nodes()
                                 .iter()
@@ -3069,7 +3372,7 @@ impl FigTreeGui {
                         }
 
                         if !handled {
-                            let branch_hit_radius = 8.0_f32;
+                            let branch_hit_radius = 8.0_f32 * zoom;
                             let mut best_branch = None;
                             let mut best_distance = f32::INFINITY;
 
@@ -4464,6 +4767,10 @@ impl eframe::App for FigTreeGui {
                                     .show_value(false),
                             );
                             self.is_live_adjusting |= zoom_resp.dragged();
+                            if zoom_resp.dragged() || zoom_resp.changed() {
+                                self.view_settle_at =
+                                    Some(Instant::now() + Self::VIEW_SETTLE_DEBOUNCE);
+                            }
 
                             ui.label("Expansion:");
                             let exp_resp = ui.add(
@@ -4471,6 +4778,10 @@ impl eframe::App for FigTreeGui {
                                     .show_value(false),
                             );
                             self.is_live_adjusting |= exp_resp.dragged();
+                            if exp_resp.dragged() || exp_resp.changed() {
+                                self.view_settle_at =
+                                    Some(Instant::now() + Self::VIEW_SETTLE_DEBOUNCE);
+                            }
                         }
 
                         // Align Tip Labels checkbox - only show for Rectangular, Circular, Slanted
