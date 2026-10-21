@@ -11,7 +11,7 @@ Usage:
 Options:
   --debug                 Build debug profile (default: release)
   --bundle-id ID          CFBundleIdentifier (default: com.yourorg.rhaetree)
-  --version VER           CFBundleVersion/CFBundleShortVersionString (default: 1.0.0)
+  --version VER           CFBundleVersion/CFBundleShortVersionString (default: 0.9.11)
   --app-name NAME         App bundle name and executable name (default: rhaeTree)
   --binary-path PATH      Use an existing binary instead of running cargo build
   --output-dir DIR        Output directory for .app (default: <repo>/dist)
@@ -41,7 +41,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 PROFILE="release"
 BUNDLE_ID="com.yourorg.rhaetree"
-APP_VERSION="1.0.0"
+APP_VERSION="0.9.11"
 APP_NAME="rhaeTree"
 OUTPUT_DIR="${ROOT_DIR}/dist"
 BIN_PATH=""

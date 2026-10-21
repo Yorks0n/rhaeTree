@@ -22,6 +22,7 @@ use crate::tree::scene_graph::{build_tree_scene, SceneLayer};
 use crate::tree::skia_renderer::SkiaTreeRenderer;
 
 mod render_worker;
+mod shortcuts;
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
 use crate::tree::{NodeId, Tree, TreeBundle, TreeFileFormat};
 use crate::ui;
@@ -2834,14 +2835,13 @@ impl FigTreeGui {
             // Live / debounce: keep Skia at zoom=1 (GPU scales). Settled: full-canvas
             // when the pixel budget allows, otherwise a sharp viewport tile.
             let now = Instant::now();
-            let settle_ready = self
-                .view_settle_at
-                .map_or(true, |deadline| now >= deadline);
+            let settle_ready = self.view_settle_at.map_or(true, |deadline| now >= deadline);
             let mut use_settled_raster = !self.is_live_adjusting && settle_ready;
             if !use_settled_raster {
                 if let Some(deadline) = self.view_settle_at {
                     if now < deadline {
-                        ui.ctx().request_repaint_after(deadline.saturating_duration_since(now));
+                        ui.ctx()
+                            .request_repaint_after(deadline.saturating_duration_since(now));
                     }
                 }
             }
@@ -2904,10 +2904,10 @@ impl FigTreeGui {
                     let still_covered = covered.width() > 1.0
                         && covered.height() > 1.0
                         && visible_local.is_positive()
-                        && covered.contains_rect(visible_local.shrink(Self::VIEWPORT_PAN_THRESHOLD));
+                        && covered
+                            .contains_rect(visible_local.shrink(Self::VIEWPORT_PAN_THRESHOLD));
                     if !still_covered {
-                        self.view_settle_at =
-                            Some(Instant::now() + Self::VIEW_SETTLE_DEBOUNCE);
+                        self.view_settle_at = Some(Instant::now() + Self::VIEW_SETTLE_DEBOUNCE);
                         use_settled_raster = false;
                         self.base_render_signature = None;
                         self.decor_render_signature = None;
@@ -2950,22 +2950,22 @@ impl FigTreeGui {
             if use_settled_raster && want_viewport_settle && visible_local.is_positive() {
                 // Reuse the existing tile while the visible clip still fits inside it
                 // (avoids re-raster on tiny pans within the pad).
-                let reuse_tile = self.texture_viewport_origin.zip(self.texture_raster_size).and_then(
-                    |(origin, tex_size)| {
+                let reuse_tile = self
+                    .texture_viewport_origin
+                    .zip(self.texture_raster_size)
+                    .and_then(|(origin, tex_size)| {
                         let covered =
                             egui::Rect::from_min_size(egui::pos2(origin.x, origin.y), tex_size);
                         if covered.width() > 1.0
                             && covered.height() > 1.0
-                            && covered.contains_rect(
-                                visible_local.shrink(Self::VIEWPORT_PAN_THRESHOLD),
-                            )
+                            && covered
+                                .contains_rect(visible_local.shrink(Self::VIEWPORT_PAN_THRESHOLD))
                         {
                             Some(covered)
                         } else {
                             None
                         }
-                    },
-                );
+                    });
                 let tile = if let Some(covered) = reuse_tile {
                     covered
                 } else {
@@ -3025,18 +3025,10 @@ impl FigTreeGui {
                 }
             };
 
-            let base_signature = self.base_render_signature(
-                tree_ref,
-                raster_width,
-                raster_height,
-                viewport_origin,
-            );
-            let decor_signature = self.decor_render_signature(
-                tree_ref,
-                raster_width,
-                raster_height,
-                viewport_origin,
-            );
+            let base_signature =
+                self.base_render_signature(tree_ref, raster_width, raster_height, viewport_origin);
+            let decor_signature =
+                self.decor_render_signature(tree_ref, raster_width, raster_height, viewport_origin);
             let interaction_signature = self.interaction_render_signature(
                 tree_ref,
                 raster_width,
@@ -3185,10 +3177,12 @@ impl FigTreeGui {
             // ── Render interaction layer synchronously (fast: selection only) ───────
             // Wait for base/decor to match the current raster mode so we do not
             // stretch a viewport-sized interaction texture over a full-canvas preview.
-            let layers_in_sync = !needs_base
-                && !needs_decor
-                && self.texture_viewport_origin == viewport_origin;
-            if needs_interaction && allow_raster && (layers_in_sync || self.base_tree_texture.is_none()) {
+            let layers_in_sync =
+                !needs_base && !needs_decor && self.texture_viewport_origin == viewport_origin;
+            if needs_interaction
+                && allow_raster
+                && (layers_in_sync || self.base_tree_texture.is_none())
+            {
                 if let Some((tree, layout)) = self.build_display_tree_layout() {
                     let selected_nodes = self.tree_viewer.selected_nodes().clone();
                     let selected_tips = self.tree_viewer.selected_tips().clone();
@@ -3277,16 +3271,14 @@ impl FigTreeGui {
                     .cloned()
                     .map(|mut hit| {
                         hit.rect = egui::Rect::from_min_max(
-                            base
-                                + egui::vec2(
-                                    hit.rect.min.x * hit_scale.x,
-                                    hit.rect.min.y * hit_scale.y,
-                                ),
-                            base
-                                + egui::vec2(
-                                    hit.rect.max.x * hit_scale.x,
-                                    hit.rect.max.y * hit_scale.y,
-                                ),
+                            base + egui::vec2(
+                                hit.rect.min.x * hit_scale.x,
+                                hit.rect.min.y * hit_scale.y,
+                            ),
+                            base + egui::vec2(
+                                hit.rect.max.x * hit_scale.x,
+                                hit.rect.max.y * hit_scale.y,
+                            ),
                         );
                         hit.anchor_pos = base
                             + egui::vec2(
@@ -3319,9 +3311,11 @@ impl FigTreeGui {
                     if let Some((tree, layout)) = self.build_display_tree_layout() {
                         let mut handled = false;
                         let mode = self.tree_viewer.selection_mode();
-                        let to_screen = self
-                            .tree_painter
-                            .create_to_screen_transform(&tree, &layout, display_inner);
+                        let to_screen = self.tree_painter.create_to_screen_transform(
+                            &tree,
+                            &layout,
+                            display_inner,
+                        );
 
                         fn distance_to_segment(
                             point: egui::Pos2,
@@ -3465,8 +3459,8 @@ impl eframe::App for FigTreeGui {
         });
 
         let copy_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
-        let copy_pressed = self.selected_branch_node().is_some()
-            && ctx.input_mut(|input| input.consume_shortcut(&copy_shortcut));
+        let copy_pressed =
+            shortcuts::consume_subtree_copy(ctx, self.selected_branch_node().is_some());
         let save_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
         let save_pressed = ctx.input_mut(|input| input.consume_shortcut(&save_shortcut));
         let (undo_pressed, redo_pressed) = ctx.input(|i| {

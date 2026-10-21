@@ -1,6 +1,6 @@
 [package]
 name = "rhaetree"
-version = "1.0.0"
+version = "0.9.11"
 edition = "2021"
 license = "MIT"
 

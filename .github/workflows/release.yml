@@ -96,7 +96,7 @@ jobs:
           if [[ "${APP_VERSION}" == v* ]]; then
             APP_VERSION="${APP_VERSION#v}"
           else
-            APP_VERSION="1.0.0"
+            APP_VERSION="0.9.11"
           fi
           cargo build --release
           mkdir -p dist
