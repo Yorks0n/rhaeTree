@@ -16,7 +16,7 @@ Options:
   --binary-path PATH      Use an existing binary instead of running cargo build
   --output-dir DIR        Output directory for .app (default: <repo>/dist)
   --icon-png PATH         PNG source for icon generation (default: <repo>/icon/icon_1024x1024.png)
-  --min-macos VER         LSMinimumSystemVersion (default: 12.0)
+  --min-macos VER         Minimum macOS version (default: auto, at least 12.0)
   --codesign-identity ID  Code signing identity (default: - for ad-hoc signing)
   --developer-id ID       Convenience alias for --codesign-identity
                           "Developer ID Application: …". When set, --options
@@ -50,7 +50,7 @@ if [[ -f "${ROOT_DIR}/icon/icon_1024x1024.png" ]]; then
 else
   ICON_PNG="${ROOT_DIR}/icon/icon.png"
 fi
-MIN_MACOS="12.0"
+MIN_MACOS="auto"
 CODESIGN_IDENTITY="-"
 DEVELOPER_ID=""
 RUN_LSREGISTER=1
@@ -152,57 +152,12 @@ mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${FRAMEWORKS_DIR}"
 cp "${BIN_PATH}" "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 
-bundle_homebrew_dylibs() {
-  local app_binary="$1"
-  local -a queue=("${app_binary}")
-  local processed="|"
-  local dep
-  local file
-  local src
-  local base
-  local dst
-  local new_ref
-
-  while ((${#queue[@]})); do
-    file="${queue[0]}"
-    queue=("${queue[@]:1}")
-
-    if [[ "${processed}" == *"|${file}|"* ]]; then
-      continue
-    fi
-    processed="${processed}${file}|"
-
-    while IFS= read -r dep; do
-      if [[ "${dep}" != /opt/homebrew/* && "${dep}" != /usr/local/* ]]; then
-        continue
-      fi
-      if [[ "${dep}" != *.dylib ]]; then
-        continue
-      fi
-      if [[ ! -f "${dep}" ]]; then
-        echo "Warning: dependent dylib not found: ${dep}"
-        continue
-      fi
-
-      src="${dep}"
-      base="$(basename "${src}")"
-      dst="${FRAMEWORKS_DIR}/${base}"
-      new_ref="@executable_path/../Frameworks/${base}"
-
-      if [[ ! -f "${dst}" ]]; then
-        cp "${src}" "${dst}"
-        chmod 755 "${dst}"
-        install_name_tool -id "${new_ref}" "${dst}"
-        queue+=("${dst}")
-      fi
-
-      install_name_tool -change "${src}" "${new_ref}" "${file}"
-    done < <(otool -L "${file}" | tail -n +2 | awk '{print $1}')
-  done
-}
-
-echo "Bundling Homebrew dynamic libraries..."
-bundle_homebrew_dylibs "${MACOS_DIR}/${APP_NAME}"
+echo "Bundling non-system dynamic libraries..."
+MIN_MACOS="$(python3 "${SCRIPT_DIR}/macos_bundle.py" bundle \
+  --binary "${BIN_PATH}" \
+  --executable "${MACOS_DIR}/${APP_NAME}" \
+  --frameworks "${FRAMEWORKS_DIR}" \
+  --min-macos "${MIN_MACOS}")"
 
 echo "Writing Info.plist..."
 cat > "${PLIST_PATH}" <<EOF
@@ -340,6 +295,8 @@ if [[ -f "${ICON_PNG}" ]] && command -v sips >/dev/null 2>&1; then
 else
   echo "Icon tools or source icon missing; skipping .icns generation."
 fi
+
+python3 "${SCRIPT_DIR}/macos_bundle.py" verify "${APP_BUNDLE}"
 
 if command -v codesign >/dev/null 2>&1; then
   CODESIGN_FLAGS=(--force --sign "${CODESIGN_IDENTITY}")

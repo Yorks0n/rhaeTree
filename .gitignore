@@ -5,6 +5,10 @@
 target/
 dist/
 
+# Python packaging tools
+__pycache__/
+*.pyc
+
 # Local assistant notes
 CLAUDE.md
 

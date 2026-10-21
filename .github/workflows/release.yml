@@ -18,7 +18,7 @@ jobs:
       matrix:
         target:
           - name: macos-arm64
-            os: macos-latest
+            os: macos-26
             artifact: rhaeTree-macos.zip
           - name: windows
             os: windows-latest
@@ -58,9 +58,16 @@ jobs:
           MACOS_CERT_P12_B64: ${{ secrets.MACOS_CERT_P12_B64 }}
           MACOS_CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
         run: |
           if [[ -z "${MACOS_CERT_P12_B64}" || -z "${MACOS_CERT_P12_PASSWORD}" || -z "${MACOS_SIGNING_IDENTITY}" ]]; then
             echo "Missing required macOS signing secrets."
+            exit 1
+          fi
+          if [[ -z "${MACOS_NOTARY_APPLE_ID}" || -z "${MACOS_NOTARY_PASSWORD}" || -z "${MACOS_NOTARY_TEAM_ID}" ]]; then
+            echo "Missing macOS notarization secrets; refusing to publish an unnotarized app."
             exit 1
           fi
 
@@ -92,30 +99,53 @@ jobs:
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
+          python3 -m unittest discover -s scripts/tests -v
           APP_VERSION="${GITHUB_REF_NAME}"
           if [[ "${APP_VERSION}" == v* ]]; then
             APP_VERSION="${APP_VERSION#v}"
           else
             APP_VERSION="0.9.11"
           fi
-          cargo build --release
+          cargo build --release --locked
           mkdir -p dist
           cp target/release/rhaeTree dist/rhaeTree
           bash scripts/build_macos_app.sh \
             --bundle-id com.yorkson.rhaetree \
             --version "${APP_VERSION}" \
             --app-name rhaeTree \
-            --binary-path dist/rhaeTree
-          if [[ -d dist/rhaeTree.app/Contents/Frameworks ]]; then
-            find dist/rhaeTree.app/Contents/Frameworks -type f -name "*.dylib" -print0 | while IFS= read -r -d '' lib; do
-              codesign --force --sign "${MACOS_SIGNING_IDENTITY}" --options runtime --timestamp "$lib"
-            done
-          fi
-          codesign --force --sign "${MACOS_SIGNING_IDENTITY}" --options runtime --timestamp dist/rhaeTree.app/Contents/MacOS/rhaeTree
-          codesign --force --sign "${MACOS_SIGNING_IDENTITY}" --options runtime --timestamp dist/rhaeTree.app
-          codesign --verify --strict --verbose=2 dist/rhaeTree.app
-          cd dist
-          ditto -c -k --sequesterRsrc --keepParent rhaeTree.app "${{ matrix.target.artifact }}"
+            --binary-path dist/rhaeTree \
+            --developer-id "${MACOS_SIGNING_IDENTITY}" \
+            --no-lsregister
+          codesign --verify --deep --strict --verbose=2 dist/rhaeTree.app
+          dist/rhaeTree.app/Contents/MacOS/rhaeTree --help
+
+      - name: Notarize and verify macOS distribution archive
+        if: startsWith(matrix.target.name, 'macos-')
+        env:
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent dist/rhaeTree.app "${RUNNER_TEMP}/rhaeTree-notary.zip"
+          xcrun notarytool submit "${RUNNER_TEMP}/rhaeTree-notary.zip" \
+            --apple-id "${MACOS_NOTARY_APPLE_ID}" \
+            --password "${MACOS_NOTARY_PASSWORD}" \
+            --team-id "${MACOS_NOTARY_TEAM_ID}" \
+            --wait --timeout 30m --output-format json > "${RUNNER_TEMP}/notary-result.json"
+          cat "${RUNNER_TEMP}/notary-result.json"
+          python3 -c 'import json,sys; result=json.load(open(sys.argv[1])); sys.exit(0 if result.get("status") == "Accepted" else 1)' \
+            "${RUNNER_TEMP}/notary-result.json"
+          xcrun stapler staple dist/rhaeTree.app
+          xcrun stapler validate dist/rhaeTree.app
+          ditto -c -k --sequesterRsrc --keepParent dist/rhaeTree.app "dist/${{ matrix.target.artifact }}"
+          mkdir -p "${RUNNER_TEMP}/macos-distribution-check"
+          ditto -x -k "dist/${{ matrix.target.artifact }}" "${RUNNER_TEMP}/macos-distribution-check"
+          APP="${RUNNER_TEMP}/macos-distribution-check/rhaeTree.app"
+          python3 scripts/macos_bundle.py verify "${APP}"
+          codesign --verify --deep --strict --verbose=2 "${APP}"
+          xcrun stapler validate "${APP}"
+          spctl --assess --type execute --verbose=4 "${APP}"
+          "${APP}/Contents/MacOS/rhaeTree" --help
 
       - name: Clean up macOS signing keychain
         if: always() && startsWith(matrix.target.name, 'macos-')

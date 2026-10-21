@@ -5,10 +5,48 @@
 
 ## 1. Bundle Identifier 与版本号
 
-- 发布版固定 `--bundle-id`（建议 `org.rhaetree.app`）。Bundle ID 一旦上线
+- 发布版固定 `--bundle-id com.yorkson.rhaetree`。Bundle ID 一旦上线
   就不能再改：Launch Services 把"用户的默认打开方式"按 ID 持久化，
   改 ID 等价于发布一个新应用，旧关联会丢失。
 - `--version` 与 `Cargo.toml` 中 `version` 同步即可。
+- `--min-macos` 默认 `auto`：读取主程序及全部动态库的 Mach-O 最低系统版本，
+  取最大值（至少 12.0）写入 `LSMinimumSystemVersion`。显式指定较低版本会导致
+  打包失败。当前 CI 固定使用 `macos-26`，其 Homebrew 库通常要求 macOS 26；
+  如需支持 macOS 12–15，必须在兼容的环境中重建所有原生依赖，不能只改 plist。
+- macOS 发布包仅包含 Apple Silicon（arm64）程序。
+
+### GitHub Actions 凭据与发布检查
+
+签名使用已有 Secrets：
+
+- `MACOS_CERT_P12_B64`
+- `MACOS_CERT_P12_PASSWORD`
+- `MACOS_SIGNING_IDENTITY`：Developer ID Application 证书身份
+
+公证还需要以下 Secrets（Apple 开发者账号凭据，与 P12 密码不同）：
+
+- `MACOS_NOTARY_APPLE_ID`：Apple ID
+- `MACOS_NOTARY_PASSWORD`：该 Apple ID 的 app-specific password
+- `MACOS_NOTARY_TEAM_ID`：签名证书所属 Team ID
+
+缺少公证凭据会在构建前失败，不会继续发布未公证包。工作流依次执行：
+
+1. 递归解析原始二进制和库的绝对路径、`@rpath`、`@loader_path`、
+   `@executable_path` 依赖，再复制并改写到 `Contents/Frameworks`。
+2. 检查库是否齐全、CPU 架构和最低系统版本，使用 Developer ID 签名。
+3. 运行包内程序的 `--help`，检查动态加载能否完成。
+4. 提交公证并确认 `Accepted`，装订票据，再生成最终分发 zip。
+5. 解压最终 zip，重新检查依赖、签名、公证票据、Gatekeeper 和 `--help`。
+
+缺失或无法解析的非系统库、库文件名冲突、错误架构均会阻断打包。
+打包工具需要 Python 3.9 或以上及 Apple Command Line Tools。
+
+本机运行打包回归测试（测试会编译并执行自有的最小 C 程序）：
+
+```bash
+python3 -m unittest discover -s scripts/tests -v
+python3 scripts/macos_bundle.py verify dist/rhaeTree.app
+```
 
 ## 2. 代码签名 + 公证（推荐流程）
 
@@ -21,8 +59,8 @@ xcrun notarytool store-credentials rhaetree-notary \
 
 # 构建 + 用 Developer ID Application 证书签名（自动加 hardened runtime + timestamp）
 scripts/build_macos_app.sh \
-  --bundle-id org.rhaetree.app \
-  --version 1.0.0 \
+  --bundle-id com.yorkson.rhaetree \
+  --version 0.9.11 \
   --developer-id "Developer ID Application: YOUR ORG (XXXXXXXXXX)"
 
 # 打 zip 提交公证
@@ -33,13 +71,15 @@ xcrun notarytool submit dist/rhaeTree.zip \
 # 装订工单（用户离线也能通过 Gatekeeper）
 xcrun stapler staple dist/rhaeTree.app
 xcrun stapler validate dist/rhaeTree.app
+spctl --assess --type execute --verbose=4 dist/rhaeTree.app
+
+# 必须在装订后重新压缩，分发的 zip 才包含票据
+ditto -c -k --sequesterRsrc --keepParent dist/rhaeTree.app dist/rhaeTree-macos.zip
 ```
 
-未公证 / 未装订的 `.app`：
-
-- 用户首次双击会被 Gatekeeper 阻止；
-- macOS **不会**把它列入「打开方式」候选 —— 也就是本次设计要支持的核心
-  流程在未公证的包上无法工作。所以发布前公证不是可选项。
+下载后带有隔离属性的未公证 `.app` 可能被 Gatekeeper 阻止。
+装订让已公证 app 在离线时也能提供公证票据；代码签名验证成功本身不能代替公证，
+也不能证明所有动态库已打包。
 
 ## 3. Launch Services 注册与校验
 
