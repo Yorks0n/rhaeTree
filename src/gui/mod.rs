@@ -24,6 +24,8 @@ use crate::tree::skia_renderer::SkiaTreeRenderer;
 #[cfg(test)]
 mod attribute_tests;
 mod attributes_panel;
+#[cfg(test)]
+mod render_tests;
 mod render_worker;
 mod shortcuts;
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
@@ -114,12 +116,25 @@ pub struct FigTreeGui {
     texture_viewport_origin: Option<egui::Vec2>,
     /// Viewport origin for the in-flight base+decor job (mirrors texture_viewport_origin).
     pending_viewport_origin: Option<egui::Vec2>,
+    full_canvas_preview: Option<FullCanvasPreview>,
+    last_visible_origin: Option<egui::Vec2>,
     /// Path queued by an external "Open With" request that we couldn't load
     /// immediately because the current edit has unsaved changes. Cleared
     /// when the user resolves the confirmation dialog.
     pending_external_open: Option<PathBuf>,
     attribute_edit_key: String,
     attribute_edit_value: String,
+}
+
+struct FullCanvasPreview {
+    base: egui::TextureHandle,
+    decor: egui::TextureHandle,
+    interaction: Option<egui::TextureHandle>,
+    base_signature: Option<u64>,
+    decor_signature: Option<u64>,
+    interaction_signature: Option<u64>,
+    raster_size: egui::Vec2,
+    tip_label_hits: Vec<crate::tree::painter::TipLabelHit>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -701,6 +716,8 @@ impl FigTreeGui {
             pending_raster_size: None,
             texture_viewport_origin: None,
             pending_viewport_origin: None,
+            full_canvas_preview: None,
+            last_visible_origin: None,
             pending_external_open: None,
             attribute_edit_key: String::new(),
             attribute_edit_value: String::new(),
@@ -827,6 +844,81 @@ impl FigTreeGui {
         self.pending_raster_size = None;
         self.texture_viewport_origin = None;
         self.pending_viewport_origin = None;
+        self.pending_job_id = None;
+        self.pending_base_sig = None;
+        self.pending_decor_sig = None;
+        self.full_canvas_preview = None;
+        self.last_visible_origin = None;
+    }
+
+    fn restore_full_canvas_preview(&mut self) {
+        if let Some(preview) = &self.full_canvas_preview {
+            self.base_tree_texture = Some(preview.base.clone());
+            self.decor_tree_texture = Some(preview.decor.clone());
+            self.base_render_signature = preview.base_signature;
+            self.decor_render_signature = preview.decor_signature;
+            self.texture_raster_size = Some(preview.raster_size);
+            self.texture_viewport_origin = None;
+            self.cached_tip_label_hits_local = preview.tip_label_hits.clone();
+            self.interaction_tree_texture = preview.interaction.clone();
+            self.interaction_render_signature = preview.interaction_signature;
+        }
+    }
+
+    fn receive_render_result(&mut self, ctx: &egui::Context) {
+        if let Some(result) = self.render_worker.try_recv() {
+            if Some(result.job_id) == self.pending_job_id {
+                // New handles keep the cached full canvas intact when a tile arrives.
+                self.base_tree_texture = Some(ctx.load_texture(
+                    "tree_canvas_base",
+                    result.base.image,
+                    egui::TextureOptions::LINEAR,
+                ));
+                self.decor_tree_texture = Some(ctx.load_texture(
+                    "tree_canvas_decor",
+                    result.decor.image,
+                    egui::TextureOptions::LINEAR,
+                ));
+                self.base_render_signature = self.pending_base_sig.take();
+                self.decor_render_signature = self.pending_decor_sig.take();
+                self.texture_raster_size = self.pending_raster_size.take();
+                self.texture_viewport_origin = self.pending_viewport_origin.take();
+                self.cached_tip_label_hits_local = result.decor.tip_label_hits;
+                self.interaction_tree_texture = None;
+                self.interaction_render_signature = None;
+                self.pending_job_id = None;
+
+                if self.texture_viewport_origin.is_none() {
+                    if let (Some(base), Some(decor), Some(raster_size)) = (
+                        &self.base_tree_texture,
+                        &self.decor_tree_texture,
+                        self.texture_raster_size,
+                    ) {
+                        self.full_canvas_preview = Some(FullCanvasPreview {
+                            base: base.clone(),
+                            decor: decor.clone(),
+                            interaction: None,
+                            base_signature: self.base_render_signature,
+                            decor_signature: self.decor_render_signature,
+                            interaction_signature: None,
+                            raster_size,
+                            tip_label_hits: self.cached_tip_label_hits_local.clone(),
+                        });
+                    }
+                    // A full preview can now be refined with a viewport tile.
+                    ctx.request_repaint();
+                }
+            }
+        }
+
+        if self.render_worker.worker_dead && self.pending_job_id.is_some() {
+            self.pending_job_id = None;
+            self.pending_base_sig = None;
+            self.pending_decor_sig = None;
+            self.pending_raster_size = None;
+            self.pending_viewport_origin = None;
+            self.last_error = Some("Renderer crashed. Please restart the application.".to_string());
+        }
     }
 
     fn record_undo_step(&mut self) {
@@ -2905,7 +2997,8 @@ impl FigTreeGui {
     }
 
     fn draw_tree_canvas(&mut self, ui: &mut egui::Ui) {
-        if let Some(tree_ref) = self.tree_viewer.current_tree() {
+        self.receive_render_result(ui.ctx());
+        if self.tree_viewer.current_tree().is_some() {
             let raw_height = ui.available_height();
             let expansion = if matches!(
                 self.current_layout,
@@ -2990,23 +3083,22 @@ impl FigTreeGui {
             let full_settle_scale = self.render_resolution_scale(display_width, display_height);
             let want_viewport_settle = full_settle_scale < 0.999;
 
-            // Live zoom with a viewport tile: drop it so we regenerate a 1× preview.
-            // Inline clears (disjoint fields) to avoid conflicting with `tree_ref` borrow.
-            if self.is_live_adjusting && self.texture_viewport_origin.is_some() {
-                self.base_render_signature = None;
-                self.decor_render_signature = None;
-                self.interaction_render_signature = None;
-                self.base_tree_texture = None;
-                self.decor_tree_texture = None;
-                self.interaction_tree_texture = None;
-                self.cached_tip_label_hits_local.clear();
-                self.texture_raster_size = None;
-                self.pending_raster_size = None;
-                self.texture_viewport_origin = None;
-                self.pending_viewport_origin = None;
+            let visible_origin = visible_local.min.to_vec2();
+            let viewport_moved = self
+                .last_visible_origin
+                .is_some_and(|previous| previous != visible_origin);
+            self.last_visible_origin = Some(visible_origin);
+            if want_viewport_settle && viewport_moved {
+                self.view_settle_at = Some(now + Self::VIEW_SETTLE_DEBOUNCE);
+                use_settled_raster = false;
+                ui.ctx().request_repaint_after(Self::VIEW_SETTLE_DEBOUNCE);
             }
 
-            // Pan away from a settled viewport tile → debounce and fall back to preview.
+            if self.is_live_adjusting && self.texture_viewport_origin.is_some() {
+                self.restore_full_canvas_preview();
+            }
+
+            // Keep the full tree visible while a new tile renders after scrolling.
             if want_viewport_settle {
                 if let (Some(origin), Some(tex_size)) =
                     (self.texture_viewport_origin, self.texture_raster_size)
@@ -3021,17 +3113,7 @@ impl FigTreeGui {
                     if !still_covered {
                         self.view_settle_at = Some(Instant::now() + Self::VIEW_SETTLE_DEBOUNCE);
                         use_settled_raster = false;
-                        self.base_render_signature = None;
-                        self.decor_render_signature = None;
-                        self.interaction_render_signature = None;
-                        self.base_tree_texture = None;
-                        self.decor_tree_texture = None;
-                        self.interaction_tree_texture = None;
-                        self.cached_tip_label_hits_local.clear();
-                        self.texture_raster_size = None;
-                        self.pending_raster_size = None;
-                        self.texture_viewport_origin = None;
-                        self.pending_viewport_origin = None;
+                        self.restore_full_canvas_preview();
                         if let Some(deadline) = self.view_settle_at {
                             ui.ctx().request_repaint_after(
                                 deadline.saturating_duration_since(Instant::now()),
@@ -3057,9 +3139,33 @@ impl FigTreeGui {
             };
 
             // Choose raster mode: preview / full settle / viewport settle.
+            let Some(tree_ref) = self.tree_viewer.current_tree() else {
+                return;
+            };
+            let has_current_preview = self.full_canvas_preview.as_ref().is_some_and(|preview| {
+                preview.interaction.is_some()
+                    && preview.base_signature
+                        == Some(self.base_render_signature(
+                            tree_ref,
+                            available_width,
+                            desired_height,
+                            None,
+                        ))
+                    && preview.decor_signature
+                        == Some(self.decor_render_signature(
+                            tree_ref,
+                            available_width,
+                            desired_height,
+                            None,
+                        ))
+            });
             let viewport_origin: Option<egui::Vec2>;
             let (raster_width, raster_height, raster_rect, scene_inner);
-            if use_settled_raster && want_viewport_settle && visible_local.is_positive() {
+            if use_settled_raster
+                && want_viewport_settle
+                && has_current_preview
+                && visible_local.is_positive()
+            {
                 // Reuse the existing tile while the visible clip still fits inside it
                 // (avoids re-raster on tiny pans within the pad).
                 let reuse_tile = self
@@ -3099,7 +3205,7 @@ impl FigTreeGui {
                 raster_rect = tile;
                 scene_inner = full_inner;
                 viewport_origin = Some(egui::vec2(tile.min.x, tile.min.y));
-            } else if use_settled_raster {
+            } else if use_settled_raster && !want_viewport_settle {
                 raster_width = display_width;
                 raster_height = display_height;
                 raster_rect = full_canvas_local;
@@ -3147,55 +3253,6 @@ impl FigTreeGui {
                 raster_height,
                 viewport_origin,
             );
-
-            // ── Poll background worker for completed base+decor result ──────────────
-            if let Some(result) = self.render_worker.try_recv() {
-                if Some(result.job_id) == self.pending_job_id {
-                    // Apply base layer
-                    if let Some(texture) = self.base_tree_texture.as_mut() {
-                        texture.set(result.base.image, egui::TextureOptions::LINEAR);
-                    } else {
-                        self.base_tree_texture = Some(ui.ctx().load_texture(
-                            "tree_canvas_base",
-                            result.base.image,
-                            egui::TextureOptions::LINEAR,
-                        ));
-                    }
-                    self.base_render_signature = self.pending_base_sig;
-
-                    // Apply decor layer
-                    if let Some(texture) = self.decor_tree_texture.as_mut() {
-                        texture.set(result.decor.image, egui::TextureOptions::LINEAR);
-                    } else {
-                        self.decor_tree_texture = Some(ui.ctx().load_texture(
-                            "tree_canvas_decor",
-                            result.decor.image,
-                            egui::TextureOptions::LINEAR,
-                        ));
-                    }
-                    self.cached_tip_label_hits_local = result.decor.tip_label_hits;
-                    self.decor_render_signature = self.pending_decor_sig;
-                    self.texture_raster_size = self.pending_raster_size;
-                    self.texture_viewport_origin = self.pending_viewport_origin;
-
-                    self.pending_job_id = None;
-                    self.pending_base_sig = None;
-                    self.pending_decor_sig = None;
-                    self.pending_raster_size = None;
-                    self.pending_viewport_origin = None;
-                }
-                // Stale results (different job_id) are silently dropped.
-            }
-
-            if self.render_worker.worker_dead && self.pending_job_id.is_some() {
-                self.pending_job_id = None;
-                self.pending_base_sig = None;
-                self.pending_decor_sig = None;
-                self.pending_raster_size = None;
-                self.pending_viewport_origin = None;
-                self.last_error =
-                    Some("Renderer crashed. Please restart the application.".to_string());
-            }
 
             let needs_base = self.base_tree_texture.is_none()
                 || self.base_render_signature != Some(base_signature);
@@ -3292,7 +3349,7 @@ impl FigTreeGui {
             let layers_in_sync =
                 !needs_base && !needs_decor && self.texture_viewport_origin == viewport_origin;
             if needs_interaction
-                && allow_raster
+                && (allow_raster || self.texture_viewport_origin.is_none())
                 && (layers_in_sync || self.base_tree_texture.is_none())
             {
                 if let Some((tree, layout)) = self.build_display_tree_layout() {
@@ -3320,6 +3377,12 @@ impl FigTreeGui {
                                 ));
                             }
                             self.interaction_render_signature = Some(interaction_signature);
+                            if viewport_origin.is_none() {
+                                if let Some(preview) = self.full_canvas_preview.as_mut() {
+                                    preview.interaction = self.interaction_tree_texture.clone();
+                                    preview.interaction_signature = Some(interaction_signature);
+                                }
+                            }
                         }
                         Err(err) => {
                             self.last_error =

@@ -60,7 +60,7 @@ xcrun notarytool store-credentials rhaetree-notary \
 # 构建 + 用 Developer ID Application 证书签名（自动加 hardened runtime + timestamp）
 scripts/build_macos_app.sh \
   --bundle-id com.yorkson.rhaetree \
-  --version 0.9.13 \
+  --version 0.9.14 \
   --developer-id "Developer ID Application: YOUR ORG (XXXXXXXXXX)"
 
 # 打 zip 提交公证
