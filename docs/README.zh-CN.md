@@ -12,6 +12,7 @@
 - 支持加载 `Newick`、`NEXUS`格式进化树
 - 支持多种树布局（如矩形、圆形、径向布局）
 - 支持交互式选择、分支高亮、着色、重定根、排序
+- 支持 BEAST/FigTree、NHX 和 NEXUS taxa 注释，按树设置内部支持度标签含义，并按属性设置标签、配色和节点大小
 - 选中分支后，按 `Cmd+C`（macOS）或 `Ctrl+C`（Windows/Linux）将其子树以 Newick 文本复制到剪贴板，也可使用 **Edit → Copy Subtree**。文本框获得焦点时保留普通文字复制行为。
 - 支持导出 `PNG`、`JPEG`、`SVG`、`PDF`格式
 - 支持以`RTR`格式导出可再次加载的编辑结果
@@ -49,3 +50,4 @@ cargo run -- [TREE_FILE]
 ## 说明
 
 - `RTR` 为本工具使用的会话/配置持久化格式。
+- 属性解释方式和配色设置详见[树注释与属性着色](attributes-and-colouring.md)，可使用 `examples/annotated-sources.nex` 试用。

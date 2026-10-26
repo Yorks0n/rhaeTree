@@ -25,8 +25,8 @@ pub fn render_preview(bundle: &TreeBundle, config: &AppConfig) {
     );
 
     for tree in bundle.trees.iter().take(3) {
-        let preview = if tree.newick.len() > 64 {
-            format!("{}...", &tree.newick[..64])
+        let preview = if tree.newick.chars().count() > 64 {
+            format!("{}...", tree.newick.chars().take(64).collect::<String>())
         } else {
             tree.newick.clone()
         };

@@ -1,0 +1,16 @@
+#NEXUS
+begin taxa;
+    dimensions ntax=3;
+    taxlabels
+        'Sample A'[&host=human,location=Asia]
+        'Sample B'[&host=bird,location=Europe]
+        'Sample C'[&host=human,location=Asia]
+    ;
+end;
+
+begin trees;
+    translate 1 'Sample A', 2 'Sample B', 3 'Sample C';
+    tree beast_style = [&R] ((1:0.1,2:0.2)[&posterior=0.98,height_95%_HPD={0.1,0.3}]:0.3,3:0.4);
+    tree paired_support = [&U] ((1:0.1,2:0.2)95/100:0.3,3:0.4);
+    tree nhx_style = [&R] ((1:0.1,2:0.2)[&&NHX:B=97:S=ancestor]:0.3,3:0.4);
+end;

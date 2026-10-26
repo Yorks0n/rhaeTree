@@ -40,6 +40,22 @@ pub struct TreeSnapshot {
     tree: Tree,
 }
 
+impl TreeSnapshot {
+    pub fn sync_annotations(&mut self, index: usize, tree: &Tree) {
+        if self.index != index {
+            return;
+        }
+        self.tree.internal_label_mode = tree.internal_label_mode;
+        for node in &mut self.tree.nodes {
+            if let Some(source) = tree.node(node.id) {
+                node.label = source.label.clone();
+                node.attributes = source.attributes.clone();
+                node.numeric_attributes = source.numeric_attributes.clone();
+            }
+        }
+    }
+}
+
 impl TreeViewer {
     pub fn new() -> Self {
         Self {
@@ -76,6 +92,41 @@ impl TreeViewer {
 
     pub fn current_tree_mut(&mut self) -> Option<&mut Tree> {
         self.trees.get_mut(self.current_tree_index)
+    }
+
+    pub fn set_internal_label_mode(&mut self, mode: super::attributes::InternalLabelMode) {
+        let index = self.current_tree_index;
+        for trees in [&mut self.trees, &mut self.original_trees] {
+            if let Some(tree) = trees.get_mut(index) {
+                tree.internal_label_mode = mode;
+            }
+        }
+        for trees in [&mut self.rooted_trees, &mut self.unordered_trees] {
+            if let Some(Some(tree)) = trees.get_mut(index) {
+                tree.internal_label_mode = mode;
+            }
+        }
+    }
+
+    pub fn set_node_attribute(&mut self, node_id: NodeId, key: &str, value: &str) {
+        let index = self.current_tree_index;
+        for trees in [&mut self.trees, &mut self.original_trees] {
+            if let Some(node) = trees
+                .get_mut(index)
+                .and_then(|tree| tree.nodes.get_mut(node_id))
+            {
+                node.set_attribute(key.to_string(), value.to_string());
+            }
+        }
+        for trees in [&mut self.rooted_trees, &mut self.unordered_trees] {
+            if let Some(node) = trees
+                .get_mut(index)
+                .and_then(Option::as_mut)
+                .and_then(|tree| tree.nodes.get_mut(node_id))
+            {
+                node.set_attribute(key.to_string(), value.to_string());
+            }
+        }
     }
 
     pub fn current_tree_index(&self) -> usize {

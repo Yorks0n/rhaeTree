@@ -127,6 +127,12 @@ impl TipLabelHit {
 
 #[derive(Debug, Clone)]
 pub struct TreePainter {
+    pub branch_colour_mapping: super::colouring::ColourMapping,
+    pub tip_label_colour_mapping: super::colouring::ColourMapping,
+    pub tip_shape_colour_mapping: super::colouring::ColourMapping,
+    pub node_shape_colour_mapping: super::colouring::ColourMapping,
+    pub tip_label_attribute: Option<String>,
+    pub branch_label_attribute: Option<String>,
     pub branch_stroke: Stroke,
     pub branch_highlight_stroke: Stroke,
     pub node_radius: f32,
@@ -191,6 +197,12 @@ pub struct TreePainter {
 impl Default for TreePainter {
     fn default() -> Self {
         Self {
+            branch_colour_mapping: Default::default(),
+            tip_label_colour_mapping: Default::default(),
+            tip_shape_colour_mapping: Default::default(),
+            node_shape_colour_mapping: Default::default(),
+            tip_label_attribute: None,
+            branch_label_attribute: None,
             branch_stroke: Stroke::new(1.8, Color32::BLACK),
             branch_highlight_stroke: Stroke::new(5.0, Color32::from_rgb(120, 170, 255)),
             node_radius: 3.0,
@@ -255,6 +267,25 @@ impl Default for TreePainter {
 }
 
 impl TreePainter {
+    pub fn annotation_color(node: &TreeNode) -> Option<Color32> {
+        let raw = node.get_attribute("!color")?.strip_prefix('#')?;
+        let value = u32::from_str_radix(raw, 16).ok()?;
+        match raw.len() {
+            6 => Some(Color32::from_rgb(
+                (value >> 16) as u8,
+                (value >> 8) as u8,
+                value as u8,
+            )),
+            8 => Some(Color32::from_rgba_unmultiplied(
+                (value >> 24) as u8,
+                (value >> 16) as u8,
+                (value >> 8) as u8,
+                value as u8,
+            )),
+            _ => None,
+        }
+    }
+
     /// Create a coordinate transformation function from layout space to screen space.
     /// This ensures consistent coordinate transformation between rendering and hit testing.
     pub fn create_to_screen_transform(
@@ -511,7 +542,7 @@ impl TreePainter {
         let Some(key) = attr else {
             return max_size.max(0.5);
         };
-        let Some(v) = tree.nodes[node_id].get_numeric_attribute(key) else {
+        let Some(v) = tree.numeric_attribute_value(&tree.nodes[node_id], key) else {
             return max_size.max(0.5);
         };
         let Some((min_v, max_v)) = value_range else {
@@ -847,13 +878,20 @@ impl TreePainter {
         }
         ordered
     }
-    pub fn tip_label_text(&self, _tree: &Tree, node: &TreeNode) -> Option<String> {
+    pub fn tip_label_text(&self, tree: &Tree, node: &TreeNode) -> Option<String> {
         match self.tip_label_display {
             TipLabelDisplay::Names => node.name.clone(),
             TipLabelDisplay::Labels => node.label.clone().or_else(|| node.name.clone()),
             TipLabelDisplay::BranchLength => node.length.map(|value| {
                 Self::format_numeric_with(value, self.tip_label_format, self.tip_label_precision)
             }),
+            TipLabelDisplay::Attribute => self.attribute_label_text(
+                tree,
+                node,
+                self.tip_label_attribute.as_deref()?,
+                self.tip_label_format,
+                self.tip_label_precision,
+            ),
         }
     }
 
@@ -881,36 +919,42 @@ impl TreePainter {
             }
             NodeLabelDisplay::Attribute => {
                 let key = self.node_label_attribute.as_deref()?;
-                if let Some((min, max)) = node.numeric_range_attribute(key) {
-                    let min_text = Self::format_numeric_with(
-                        min,
-                        self.node_label_format,
-                        self.node_label_precision,
-                    );
-                    let max_text = Self::format_numeric_with(
-                        max,
-                        self.node_label_format,
-                        self.node_label_precision,
-                    );
-                    if (max - min).abs() <= f64::EPSILON {
-                        Some(min_text)
-                    } else {
-                        Some(format!("[{min_text},{max_text}]"))
-                    }
-                } else if let Some(value) = node.get_numeric_attribute(key) {
-                    Some(Self::format_numeric_with(
-                        value,
-                        self.node_label_format,
-                        self.node_label_precision,
-                    ))
-                } else {
-                    node.get_attribute(key).cloned()
-                }
+                self.attribute_label_text(
+                    tree,
+                    node,
+                    key,
+                    self.node_label_format,
+                    self.node_label_precision,
+                )
             }
         }
     }
 
-    pub fn branch_label_text(&self, node: &TreeNode) -> Option<String> {
+    fn attribute_label_text(
+        &self,
+        tree: &Tree,
+        node: &TreeNode,
+        key: &str,
+        format: TipLabelNumberFormat,
+        precision: usize,
+    ) -> Option<String> {
+        if let Some(value) = tree.numeric_attribute_value(node, key) {
+            return Some(Self::format_numeric_with(value, format, precision));
+        }
+        if let Some((min, max)) = node.numeric_range_attribute(key) {
+            let min_text = Self::format_numeric_with(min, format, precision);
+            let max_text = Self::format_numeric_with(max, format, precision);
+            if (max - min).abs() <= f64::EPSILON {
+                Some(min_text)
+            } else {
+                Some(format!("[{min_text},{max_text}]"))
+            }
+        } else {
+            tree.attribute_value(node, key).map(|s| s.into_owned())
+        }
+    }
+
+    pub fn branch_label_text(&self, tree: &Tree, node: &TreeNode) -> Option<String> {
         match self.branch_label_display {
             BranchLabelDisplay::Names => node.name.clone(),
             BranchLabelDisplay::BranchLength => node.length.map(|value| {
@@ -920,6 +964,13 @@ impl TreePainter {
                     self.branch_label_precision,
                 )
             }),
+            BranchLabelDisplay::Attribute => self.attribute_label_text(
+                tree,
+                node,
+                self.branch_label_attribute.as_deref()?,
+                self.branch_label_format,
+                self.branch_label_precision,
+            ),
         }
     }
 
@@ -1233,6 +1284,7 @@ pub enum TipLabelDisplay {
     Names,
     Labels,
     BranchLength,
+    Attribute,
 }
 
 impl TipLabelDisplay {
@@ -1241,11 +1293,12 @@ impl TipLabelDisplay {
             Self::Names => "Names",
             Self::Labels => "Labels",
             Self::BranchLength => "Branch Length",
+            Self::Attribute => "Attribute",
         }
     }
 
     pub fn is_numeric(self) -> bool {
-        matches!(self, Self::BranchLength)
+        matches!(self, Self::BranchLength | Self::Attribute)
     }
 }
 
@@ -1262,6 +1315,7 @@ pub enum NodeLabelDisplay {
 pub enum BranchLabelDisplay {
     Names,
     BranchLength,
+    Attribute,
 }
 
 impl BranchLabelDisplay {
@@ -1269,11 +1323,12 @@ impl BranchLabelDisplay {
         match self {
             Self::Names => "Names",
             Self::BranchLength => "Branch Length",
+            Self::Attribute => "Attribute",
         }
     }
 
     pub fn is_numeric(self) -> bool {
-        matches!(self, Self::BranchLength)
+        matches!(self, Self::BranchLength | Self::Attribute)
     }
 }
 

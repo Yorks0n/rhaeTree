@@ -21,6 +21,9 @@ use crate::tree::painter::{
 use crate::tree::scene_graph::{build_tree_scene, SceneLayer};
 use crate::tree::skia_renderer::SkiaTreeRenderer;
 
+#[cfg(test)]
+mod attribute_tests;
+mod attributes_panel;
 mod render_worker;
 mod shortcuts;
 use crate::tree::viewer::{SelectionMode, TextSearchType, TreeSnapshot, TreeViewer};
@@ -115,6 +118,8 @@ pub struct FigTreeGui {
     /// immediately because the current edit has unsaved changes. Cleared
     /// when the user resolves the confirmation dialog.
     pending_external_open: Option<PathBuf>,
+    attribute_edit_key: String,
+    attribute_edit_value: String,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -506,6 +511,7 @@ fn tip_label_display_name(value: TipLabelDisplay) -> &'static str {
         TipLabelDisplay::Names => "names",
         TipLabelDisplay::Labels => "labels",
         TipLabelDisplay::BranchLength => "branch_length",
+        TipLabelDisplay::Attribute => "attribute",
     }
 }
 
@@ -535,6 +541,7 @@ fn parse_tip_label_display(s: &str) -> Option<TipLabelDisplay> {
         "names" => Some(TipLabelDisplay::Names),
         "labels" => Some(TipLabelDisplay::Labels),
         "branch_length" => Some(TipLabelDisplay::BranchLength),
+        "attribute" => Some(TipLabelDisplay::Attribute),
         _ => None,
     }
 }
@@ -543,6 +550,7 @@ fn branch_label_display_name(value: BranchLabelDisplay) -> &'static str {
     match value {
         BranchLabelDisplay::Names => "names",
         BranchLabelDisplay::BranchLength => "branch_length",
+        BranchLabelDisplay::Attribute => "attribute",
     }
 }
 
@@ -550,6 +558,7 @@ fn parse_branch_label_display(s: &str) -> Option<BranchLabelDisplay> {
     match s.trim().to_ascii_lowercase().as_str() {
         "names" => Some(BranchLabelDisplay::Names),
         "branch_length" => Some(BranchLabelDisplay::BranchLength),
+        "attribute" => Some(BranchLabelDisplay::Attribute),
         _ => None,
     }
 }
@@ -693,6 +702,8 @@ impl FigTreeGui {
             texture_viewport_origin: None,
             pending_viewport_origin: None,
             pending_external_open: None,
+            attribute_edit_key: String::new(),
+            attribute_edit_value: String::new(),
         };
 
         if let Some(path) = app.config.tree_path.clone() {
@@ -1181,6 +1192,31 @@ impl FigTreeGui {
                 }
                 self.tree_viewer.set_trees(bundle.trees.clone());
                 self.tree_painter.clear_color_overrides();
+                self.tree_painter.branch_colour_mapping = Default::default();
+                self.tree_painter.tip_label_colour_mapping = Default::default();
+                self.tree_painter.tip_shape_colour_mapping = Default::default();
+                self.tree_painter.node_shape_colour_mapping = Default::default();
+                self.tree_painter.tip_label_attribute = None;
+                self.tree_painter.branch_label_attribute = None;
+                if self.tree_painter.tip_label_display == TipLabelDisplay::Attribute {
+                    self.tree_painter.tip_label_display = TipLabelDisplay::Labels;
+                }
+                if self.tree_painter.branch_label_display == BranchLabelDisplay::Attribute {
+                    self.tree_painter.branch_label_display = BranchLabelDisplay::BranchLength;
+                }
+                self.tree_painter.node_label_attribute = None;
+                self.tree_painter.node_label_display = NodeLabelDisplay::Labels;
+                if let Some(tree) = self.tree_viewer.current_tree() {
+                    let catalogue =
+                        tree.attribute_catalogue(crate::tree::attributes::AttributeScope::Internal);
+                    if let Some(key) = ["posterior", "bootstrap", "!support", "!support.1"]
+                        .into_iter()
+                        .find(|key| catalogue.iter().any(|info| info.key == *key))
+                    {
+                        self.tree_painter.node_label_display = NodeLabelDisplay::Attribute;
+                        self.tree_painter.node_label_attribute = Some(key.to_string());
+                    }
+                }
                 self.undo_stack.clear();
                 self.redo_stack.clear();
                 self.config.tree_path = Some(path);
@@ -1334,6 +1370,37 @@ impl FigTreeGui {
 
     fn collect_rtr_settings(&self) -> BTreeMap<String, String> {
         let mut settings = BTreeMap::new();
+        for (prefix, mapping) in [
+            ("colour.branch", &self.tree_painter.branch_colour_mapping),
+            (
+                "colour.tipLabel",
+                &self.tree_painter.tip_label_colour_mapping,
+            ),
+            (
+                "colour.tipShape",
+                &self.tree_painter.tip_shape_colour_mapping,
+            ),
+            (
+                "colour.nodeShape",
+                &self.tree_painter.node_shape_colour_mapping,
+            ),
+        ] {
+            mapping.write_settings(prefix, &mut settings);
+        }
+        settings.insert(
+            "painter.tipLabelAttribute".into(),
+            self.tree_painter
+                .tip_label_attribute
+                .clone()
+                .unwrap_or_default(),
+        );
+        settings.insert(
+            "painter.branchLabelAttribute".into(),
+            self.tree_painter
+                .branch_label_attribute
+                .clone()
+                .unwrap_or_default(),
+        );
 
         settings.insert(
             "layout.type".to_string(),
@@ -1676,6 +1743,34 @@ impl FigTreeGui {
     }
 
     fn apply_rtr_settings(&mut self, settings: &BTreeMap<String, String>) {
+        for (prefix, mapping) in [
+            (
+                "colour.branch",
+                &mut self.tree_painter.branch_colour_mapping,
+            ),
+            (
+                "colour.tipLabel",
+                &mut self.tree_painter.tip_label_colour_mapping,
+            ),
+            (
+                "colour.tipShape",
+                &mut self.tree_painter.tip_shape_colour_mapping,
+            ),
+            (
+                "colour.nodeShape",
+                &mut self.tree_painter.node_shape_colour_mapping,
+            ),
+        ] {
+            mapping.read_settings(prefix, settings);
+        }
+        self.tree_painter.tip_label_attribute = settings
+            .get("painter.tipLabelAttribute")
+            .filter(|v| !v.is_empty())
+            .cloned();
+        self.tree_painter.branch_label_attribute = settings
+            .get("painter.branchLabelAttribute")
+            .filter(|v| !v.is_empty())
+            .cloned();
         if let Some(v) = settings
             .get("layout.type")
             .and_then(|s| parse_layout_type(s))
@@ -2420,6 +2515,7 @@ impl FigTreeGui {
         tree.id.hash(h);
         tree.root.hash(h);
         tree.nodes.len().hash(h);
+        tree.internal_label_mode.hash(h);
         for n in &tree.nodes {
             n.id.hash(h);
             n.parent.hash(h);
@@ -2427,6 +2523,10 @@ impl FigTreeGui {
             n.name.hash(h);
             n.label.hash(h);
             n.children.hash(h);
+            n.name_quoted.hash(h);
+            let mut attributes: Vec<_> = n.attributes.iter().collect();
+            attributes.sort_by(|a, b| a.0.cmp(b.0));
+            attributes.hash(h);
         }
     }
 
@@ -2512,6 +2612,18 @@ impl FigTreeGui {
         viewport_origin: Option<egui::Vec2>,
     ) {
         Self::hash_tree(h, tree);
+        self.tree_painter.tip_label_attribute.hash(h);
+        self.tree_painter.branch_label_attribute.hash(h);
+        // Mapping settings participate in every layer's signature so attribute
+        // edits and palette changes cannot reuse stale pixels.
+        for mapping in [
+            &self.tree_painter.branch_colour_mapping,
+            &self.tree_painter.tip_label_colour_mapping,
+            &self.tree_painter.tip_shape_colour_mapping,
+            &self.tree_painter.node_shape_colour_mapping,
+        ] {
+            mapping.hash_state(h);
+        }
         self.current_layout.hash(h);
         self.transform_branches_enabled.hash(h);
         self.branch_transform.hash(h);
@@ -4970,7 +5082,7 @@ impl eframe::App for FigTreeGui {
                             )
                             .show_value(false),
                         );
-
+                        self.attribute_controls(ui);
                     });
                 if appearance_response.header_response.clicked() {
                     self.panel_states.appearance_expanded = !self.panel_states.appearance_expanded;
@@ -5007,26 +5119,47 @@ impl eframe::App for FigTreeGui {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label("Display:");
+                            let mut display = self.tree_painter.tip_label_display;
                             egui::ComboBox::from_id_salt("tip_labels_display")
-                                .selected_text(self.tree_painter.tip_label_display.label())
+                                .selected_text(display.label())
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(
-                                        &mut self.tree_painter.tip_label_display,
+                                        &mut display,
                                         TipLabelDisplay::Names,
                                         "Names",
                                     );
                                     ui.selectable_value(
-                                        &mut self.tree_painter.tip_label_display,
+                                        &mut display,
                                         TipLabelDisplay::Labels,
                                         "Labels",
                                     );
                                     ui.selectable_value(
-                                        &mut self.tree_painter.tip_label_display,
+                                        &mut display,
                                         TipLabelDisplay::BranchLength,
                                         "Branch Length",
                                     );
+                                    ui.selectable_value(
+                                        &mut display,
+                                        TipLabelDisplay::Attribute,
+                                        "Attribute",
+                                    );
                                 });
+                            if display != self.tree_painter.tip_label_display {
+                                self.record_undo_step();
+                                self.tree_painter.tip_label_display = display;
+                            }
                         });
+                        if self.tree_painter.tip_label_display == TipLabelDisplay::Attribute {
+                            let mut field = self.tree_painter.tip_label_attribute.clone();
+                            if let Some(tree) = self.tree_viewer.current_tree() {
+                                attributes_panel::attribute_selector(ui, "tip_label_attribute", tree,
+                                    crate::tree::attributes::AttributeScope::Tips, &mut field, "Select field");
+                            }
+                            if field != self.tree_painter.tip_label_attribute {
+                                self.record_undo_step();
+                                self.tree_painter.tip_label_attribute = field;
+                            }
+                        }
 
                         ui.horizontal(|ui| {
                             ui.label("Font Size:");
@@ -5144,7 +5277,7 @@ impl eframe::App for FigTreeGui {
                             .tree_viewer
                             .current_tree()
                             .map(|t| {
-                                for n in &t.nodes {
+                                for n in t.nodes.iter().filter(|n| !n.is_leaf()) {
                                     if n.name.as_deref().is_some_and(|v| !v.trim().is_empty()) {
                                         has_node_names = true;
                                     }
@@ -5152,34 +5285,12 @@ impl eframe::App for FigTreeGui {
                                         has_node_labels = true;
                                     }
                                 }
-                                let mut keys = t.node_attribute_keys();
-                                if keys.is_empty() {
-                                    keys = t.node_numeric_attribute_keys();
-                                }
-                                keys
+                                t.attribute_catalogue(crate::tree::attributes::AttributeScope::Internal)
+                                    .into_iter().map(|info| info.key).collect()
                             })
                             .unwrap_or_default();
                         attribute_fields.sort();
                         attribute_fields.dedup();
-
-                        if matches!(self.tree_painter.node_label_display, NodeLabelDisplay::Names)
-                            && !has_node_names
-                        {
-                            self.tree_painter.node_label_display = if has_node_labels {
-                                NodeLabelDisplay::Labels
-                            } else {
-                                NodeLabelDisplay::BranchLength
-                            };
-                        }
-                        if matches!(self.tree_painter.node_label_display, NodeLabelDisplay::Labels)
-                            && !has_node_labels
-                        {
-                            self.tree_painter.node_label_display = if has_node_names {
-                                NodeLabelDisplay::Names
-                            } else {
-                                NodeLabelDisplay::BranchLength
-                            };
-                        }
 
                         ui.horizontal(|ui| {
                             ui.label("Display:");
@@ -5231,10 +5342,11 @@ impl eframe::App for FigTreeGui {
                                             if ui
                                                 .selectable_label(
                                                     selected,
-                                                    format!("Attribute: {key}"),
+                                                    format!("Attribute: {}", crate::tree::attributes::attribute_label(key)),
                                                 )
                                                 .clicked()
                                             {
+                                                self.record_undo_step();
                                                 self.tree_painter.node_label_display =
                                                     NodeLabelDisplay::Attribute;
                                                 self.tree_painter.node_label_attribute =
@@ -5325,22 +5437,44 @@ impl eframe::App for FigTreeGui {
                 });
 
                 branch_state.show_body_indented(&branch_header_response.response, ui, |ui| {
-                    if matches!(self.tree_painter.branch_label_display, BranchLabelDisplay::Names) {
-                        self.tree_painter.branch_label_display = BranchLabelDisplay::BranchLength;
-                    }
-
                     ui.horizontal(|ui| {
                         ui.label("Display:");
+                        let mut display = self.tree_painter.branch_label_display;
                         egui::ComboBox::from_id_salt("branch_labels_display")
-                            .selected_text(self.tree_painter.branch_label_display.label())
+                            .selected_text(display.label())
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
-                                    &mut self.tree_painter.branch_label_display,
+                                    &mut display,
+                                    BranchLabelDisplay::Names,
+                                    "Names",
+                                );
+                                ui.selectable_value(
+                                    &mut display,
                                     BranchLabelDisplay::BranchLength,
                                     BranchLabelDisplay::BranchLength.label(),
                                 );
+                                ui.selectable_value(
+                                    &mut display,
+                                    BranchLabelDisplay::Attribute,
+                                    "Attribute",
+                                );
                             });
+                        if display != self.tree_painter.branch_label_display {
+                            self.record_undo_step();
+                            self.tree_painter.branch_label_display = display;
+                        }
                     });
+                    if self.tree_painter.branch_label_display == BranchLabelDisplay::Attribute {
+                        let mut field = self.tree_painter.branch_label_attribute.clone();
+                        if let Some(tree) = self.tree_viewer.current_tree() {
+                            attributes_panel::attribute_selector(ui, "branch_label_attribute", tree,
+                                crate::tree::attributes::AttributeScope::All, &mut field, "Select field");
+                        }
+                        if field != self.tree_painter.branch_label_attribute {
+                            self.record_undo_step();
+                            self.tree_painter.branch_label_attribute = field;
+                        }
+                    }
 
                     ui.horizontal(|ui| {
                         ui.label("Font Size:");
@@ -5422,7 +5556,8 @@ impl eframe::App for FigTreeGui {
                     let mut numeric_fields: Vec<String> = self
                         .tree_viewer
                         .current_tree()
-                        .map(|t| t.node_numeric_attribute_keys())
+                        .map(|t| t.attribute_catalogue(crate::tree::attributes::AttributeScope::Tips)
+                            .into_iter().filter(|a| a.kind == crate::tree::attributes::AttributeKind::Numeric).map(|a| a.key).collect::<Vec<_>>())
                         .unwrap_or_default();
                     numeric_fields.sort();
                     numeric_fields.dedup();
@@ -5613,7 +5748,8 @@ impl eframe::App for FigTreeGui {
                         let mut numeric_fields: Vec<String> = self
                             .tree_viewer
                             .current_tree()
-                            .map(|t| t.node_numeric_attribute_keys())
+                            .map(|t| t.attribute_catalogue(crate::tree::attributes::AttributeScope::Internal)
+                                .into_iter().filter(|a| a.kind == crate::tree::attributes::AttributeKind::Numeric).map(|a| a.key).collect::<Vec<_>>())
                             .unwrap_or_default();
                         numeric_fields.sort();
                         numeric_fields.dedup();

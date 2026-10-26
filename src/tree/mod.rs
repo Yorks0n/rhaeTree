@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use phylotree::tree::{Node as PhyloNode, Tree as PhyloTree};
 
+pub mod attributes;
 pub mod cairo_renderer;
+pub mod colouring;
 pub mod layout;
 pub mod painter;
 pub mod scene_graph;
@@ -38,27 +40,7 @@ impl NodeNumericValue {
         match self {
             Self::Scalar(value) => Some((*value, *value)),
             Self::Range { min, max } => Some((*min, *max)),
-            Self::Values(values) => {
-                if values.is_empty() {
-                    None
-                } else {
-                    let mut min = f64::INFINITY;
-                    let mut max = f64::NEG_INFINITY;
-
-                    for value in values {
-                        if value.is_finite() {
-                            min = min.min(*value);
-                            max = max.max(*value);
-                        }
-                    }
-
-                    if min.is_finite() && max.is_finite() {
-                        Some((min, max))
-                    } else {
-                        None
-                    }
-                }
-            }
+            Self::Values(_) => None,
         }
     }
 }
@@ -73,6 +55,7 @@ pub struct Tree {
     pub nodes: Vec<TreeNode>,
     pub attributes: HashMap<String, String>,
     pub phylo: PhyloTree,
+    pub internal_label_mode: attributes::InternalLabelMode,
 }
 
 impl Tree {
@@ -88,6 +71,7 @@ impl Tree {
             nodes,
             attributes: HashMap::new(),
             phylo,
+            internal_label_mode: attributes::InternalLabelMode::Auto,
         }
     }
 
@@ -287,16 +271,6 @@ impl Tree {
         self.nodes.iter().filter(|node| node.is_leaf()).collect()
     }
 
-    pub fn node_numeric_attribute_keys(&self) -> Vec<String> {
-        let mut keys: BTreeSet<String> = BTreeSet::new();
-        for node in &self.nodes {
-            for key in node.numeric_attributes.keys() {
-                keys.insert(key.clone());
-            }
-        }
-        keys.into_iter().collect()
-    }
-
     pub fn node_attribute_keys(&self) -> Vec<String> {
         let mut keys: BTreeSet<String> = BTreeSet::new();
         for node in &self.nodes {
@@ -394,6 +368,7 @@ impl Tree {
 pub struct TreeNode {
     pub id: NodeId,
     pub name: Option<String>,
+    pub name_quoted: bool,
     pub label: Option<String>, // User-defined label for annotation
     pub length: Option<f64>,
     pub parent: Option<NodeId>,
@@ -407,6 +382,7 @@ impl TreeNode {
         Self {
             id,
             name,
+            name_quoted: false,
             label: None,
             length,
             parent: None,
@@ -453,6 +429,7 @@ impl TreeNode {
             }
         });
         let mut tree_node = TreeNode::new(node.id, name, node.parent_edge);
+        tree_node.name_quoted = node.name.as_deref().is_some_and(|s| s.starts_with('"'));
         tree_node.parent = node.parent;
         tree_node.children = node.children.clone();
         if let Some(comment) = node.comment.as_deref() {
@@ -461,7 +438,7 @@ impl TreeNode {
         tree_node
     }
 
-    fn apply_comment(&mut self, comment: &str) {
+    pub(crate) fn apply_comment(&mut self, comment: &str) {
         for (key, value) in parse_comment_attributes(comment) {
             self.set_attribute(key, value);
         }
@@ -485,25 +462,30 @@ impl TreeNode {
                 self.numeric_attributes
                     .insert(key.to_string(), NodeNumericValue::Values(values));
             }
-        } else if let Ok(number) = value.trim().parse::<f64>() {
-            self.numeric_attributes
-                .insert(key.to_string(), NodeNumericValue::Scalar(number));
         } else {
             self.numeric_attributes.remove(key);
         }
     }
 }
 
-fn parse_comment_attributes(comment: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_comment_attributes(comment: &str) -> Vec<(String, String)> {
     let mut attributes = Vec::new();
-
-    for segment in comment.split('&') {
+    let comment = comment.trim();
+    let (body, delimiter) = if let Some(body) = comment.strip_prefix("&&NHX:") {
+        (body, ':')
+    } else if let Some(body) = comment.strip_prefix('&') {
+        (body, ',')
+    } else {
+        // Ordinary Newick comments are prose, not boolean attributes.
+        return attributes;
+    };
+    for segment in split_top_level(body, '&') {
         let trimmed_segment = segment.trim();
         if trimmed_segment.is_empty() {
             continue;
         }
 
-        for part in split_top_level(trimmed_segment, ',') {
+        for part in split_top_level(trimmed_segment, delimiter) {
             let trimmed_part = part.trim();
             if trimmed_part.is_empty() {
                 continue;
@@ -650,13 +632,11 @@ fn parse_numeric_values(value: &str) -> Option<Vec<f64>> {
         if candidate.is_empty() {
             continue;
         }
-        if let Ok(number) = candidate.parse::<f64>() {
-            values.push(number);
-        } else if let Some(stripped) = candidate.strip_suffix('%') {
-            if let Ok(number) = stripped.parse::<f64>() {
-                values.push(number);
-            }
+        let number = candidate.parse::<f64>().ok()?;
+        if !number.is_finite() {
+            return None;
         }
+        values.push(number);
     }
 
     if values.is_empty() {

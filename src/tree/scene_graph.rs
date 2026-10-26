@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
+use crate::tree::attributes::AttributeScope;
+use crate::tree::colouring::mapped_color;
 use crate::tree::layout::{RectSegmentKind, TreeLayout, TreeLayoutType};
 use crate::tree::painter::{
     HighlightShape, ShapeColorMode, ShapeSizeMode, ShapeType, TipLabelHit, TreePainter,
@@ -114,6 +116,18 @@ pub fn build_tree_scene(
     let include_base = layer.include_base();
     let include_decor = layer.include_decor();
     let include_interaction = layer.include_interaction();
+    let branch_colors = painter
+        .branch_colour_mapping
+        .resolve(tree, AttributeScope::All);
+    let tip_label_colors = painter
+        .tip_label_colour_mapping
+        .resolve(tree, AttributeScope::Tips);
+    let tip_shape_colors = painter
+        .tip_shape_colour_mapping
+        .resolve(tree, AttributeScope::Tips);
+    let node_shape_colors = painter
+        .node_shape_colour_mapping
+        .resolve(tree, AttributeScope::Internal);
     let circular_arcs_by_child: Vec<Option<&crate::tree::layout::ArcSegment>> =
         if matches!(layout.layout_type, TreeLayoutType::Circular) {
             let mut by_child = vec![None; tree.nodes.len()];
@@ -204,7 +218,8 @@ pub fn build_tree_scene(
                 && !matches!(selection_mode, Some(SelectionMode::Taxa));
             let base_color = painter
                 .branch_color_override(*child)
-                .unwrap_or(branch_color);
+                .or_else(|| TreePainter::annotation_color(&tree.nodes[*child]))
+                .unwrap_or_else(|| mapped_color(&branch_colors, *child, branch_color));
             if let Some(arc) = circular_arcs_by_child
                 .get(*child)
                 .and_then(|arc| *arc)
@@ -273,7 +288,8 @@ pub fn build_tree_scene(
                 && !matches!(selection_mode, Some(SelectionMode::Taxa));
             let base_color = painter
                 .branch_color_override(branch.child)
-                .unwrap_or(branch_color);
+                .or_else(|| TreePainter::annotation_color(&tree.nodes[branch.child]))
+                .unwrap_or_else(|| mapped_color(&branch_colors, branch.child, branch_color));
             let points: Vec<Pos2> = branch
                 .points
                 .iter()
@@ -306,7 +322,8 @@ pub fn build_tree_scene(
                 && !matches!(selection_mode, Some(SelectionMode::Taxa));
             let base_color = painter
                 .branch_color_override(*child)
-                .unwrap_or(branch_color);
+                .or_else(|| TreePainter::annotation_color(&tree.nodes[*child]))
+                .unwrap_or_else(|| mapped_color(&branch_colors, *child, branch_color));
             if include_interaction && is_selected {
                 primitives.push(ScenePrimitive::StrokeLine {
                     from: to_local(to_screen(layout.positions[*parent])),
@@ -614,6 +631,17 @@ pub fn build_tree_scene(
                     .unwrap_or(base_fill),
             }
         };
+        let fill = if node.is_leaf() {
+            painter
+                .tip_shape_color_override(node.id)
+                .or_else(|| TreePainter::annotation_color(node))
+                .unwrap_or_else(|| mapped_color(&tip_shape_colors, node.id, fill))
+        } else {
+            painter
+                .node_shape_color_override(node.id)
+                .or_else(|| TreePainter::annotation_color(node))
+                .unwrap_or_else(|| mapped_color(&node_shape_colors, node.id, fill))
+        };
         let should_draw = if node.is_leaf() {
             painter.show_tip_shapes
         } else {
@@ -656,7 +684,10 @@ pub fn build_tree_scene(
                 if !text.is_empty() {
                     let color = painter
                         .tip_label_color_override(node.id)
-                        .unwrap_or(painter.label_color);
+                        .or_else(|| TreePainter::annotation_color(node))
+                        .unwrap_or_else(|| {
+                            mapped_color(&tip_label_colors, node.id, painter.label_color)
+                        });
                     match layout.layout_type {
                         TreeLayoutType::Circular
                         | TreeLayoutType::Radial
@@ -821,7 +852,7 @@ pub fn build_tree_scene(
 
         if include_decor && painter.show_branch_labels {
             if let Some(parent_id) = node.parent {
-                if let Some(text) = painter.branch_label_text(node) {
+                if let Some(text) = painter.branch_label_text(tree, node) {
                     match layout.layout_type {
                         TreeLayoutType::Circular => {
                             if let Some(arc) =
@@ -1315,7 +1346,7 @@ fn shape_value_range_for_nodes(
         if tips_only != n.is_leaf() {
             continue;
         }
-        if let Some(v) = n.get_numeric_attribute(key) {
+        if let Some(v) = tree.numeric_attribute_value(n, key) {
             if v.is_finite() {
                 min_v = min_v.min(v);
                 max_v = max_v.max(v);
