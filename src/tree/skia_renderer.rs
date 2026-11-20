@@ -79,7 +79,11 @@ impl SkiaTreeRenderer {
         pixels_per_point: f32,
         resolution_scale: f32,
     ) -> Result<SkiaRenderOutput, String> {
-        let ppp = (pixels_per_point.max(1.0) * resolution_scale.clamp(0.05, 1.0)).max(0.05);
+        // The caller may need a very small scale to fit a device's texture limit.
+        let ppp = pixels_per_point.max(1.0) * resolution_scale;
+        if !ppp.is_finite() || ppp <= 0.0 {
+            return Err("Invalid Skia raster scale".to_string());
+        }
         let width_px = ((scene.size.x * ppp).round().max(1.0)) as u32;
         let height_px = ((scene.size.y * ppp).round().max(1.0)) as u32;
 

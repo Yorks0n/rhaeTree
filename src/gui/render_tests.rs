@@ -14,12 +14,20 @@ fn app() -> (egui::Context, FigTreeGui) {
 }
 
 fn draw(context: &egui::Context, app: &mut FigTreeGui, offset: f32) -> egui::FullOutput {
+    draw_with_limits(context, app, offset, egui::vec2(480.0, 360.0), None)
+}
+
+fn draw_with_limits(
+    context: &egui::Context,
+    app: &mut FigTreeGui,
+    offset: f32,
+    screen_size: egui::Vec2,
+    max_texture_side: Option<usize>,
+) -> egui::FullOutput {
     context.run(
         egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(480.0, 360.0),
-            )),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_size)),
+            max_texture_side,
             ..Default::default()
         },
         |ctx| {
@@ -31,6 +39,45 @@ fn draw(context: &egui::Context, app: &mut FigTreeGui, offset: f32) -> egui::Ful
             });
         },
     )
+}
+
+#[test]
+fn maximum_expansion_respects_the_device_texture_limit() {
+    let (context, mut app) = app();
+    app.tree_viewer.zoom = 1.0;
+    app.pixels_per_point = 2.0;
+    let max_texture_side = 8192;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        draw_with_limits(
+            &context,
+            &mut app,
+            0.0,
+            egui::vec2(480.0, 1100.0),
+            Some(max_texture_side),
+        );
+        if app.texture_viewport_origin.is_some() && !app.render_worker.is_busy() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "viewport rendering timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let preview = app.full_canvas_preview.as_ref().unwrap();
+    assert!(preview.raster_size.y * app.pixels_per_point > max_texture_side as f32);
+    for texture in [
+        &preview.base,
+        &preview.decor,
+        preview.interaction.as_ref().unwrap(),
+        app.base_tree_texture.as_ref().unwrap(),
+        app.decor_tree_texture.as_ref().unwrap(),
+        app.interaction_tree_texture.as_ref().unwrap(),
+    ] {
+        assert!(texture
+            .size()
+            .into_iter()
+            .all(|side| side <= max_texture_side));
+    }
 }
 
 fn wait_for_tile(context: &egui::Context, app: &mut FigTreeGui) {

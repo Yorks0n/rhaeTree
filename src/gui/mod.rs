@@ -611,7 +611,6 @@ fn parse_tip_label_number_format(s: &str) -> Option<TipLabelNumberFormat> {
 }
 
 impl FigTreeGui {
-    const MAX_RENDER_TEXTURE_EDGE: f32 = 12288.0;
     const MAX_RENDER_PIXELS: f32 = 16_000_000.0;
     /// Extra points around the visible clip when viewport-settling (reduces edge shimmer).
     const VIEWPORT_SETTLE_PAD: f32 = 64.0;
@@ -2955,8 +2954,7 @@ impl FigTreeGui {
         inner: egui::Rect,
         selected_nodes: &std::collections::HashSet<NodeId>,
         selected_tips: &std::collections::HashSet<NodeId>,
-        canvas_width: f32,
-        canvas_height: f32,
+        resolution_scale: f32,
         scene_layer: SceneLayer,
     ) -> Result<crate::tree::skia_renderer::SkiaRenderOutput, String> {
         self.skia_renderer.render(
@@ -2972,18 +2970,15 @@ impl FigTreeGui {
             Some(self.tree_viewer.selection_mode()),
             scene_layer,
             self.pixels_per_point,
-            self.render_resolution_scale(canvas_width, canvas_height),
+            resolution_scale,
         )
     }
 
-    fn render_resolution_scale(&self, canvas_width: f32, canvas_height: f32) -> f32 {
+    fn render_resolution_scale(&self, canvas_size: egui::Vec2, max_texture_side: f32) -> f32 {
         let ppp = self.pixels_per_point.max(1.0);
-        let width_px = (canvas_width.max(1.0) * ppp).max(1.0);
-        let height_px = (canvas_height.max(1.0) * ppp).max(1.0);
-
-        let edge_scale = (Self::MAX_RENDER_TEXTURE_EDGE / width_px)
-            .min(Self::MAX_RENDER_TEXTURE_EDGE / height_px)
-            .min(1.0);
+        let width_px = canvas_size.x.max(1.0) * ppp;
+        let height_px = canvas_size.y.max(1.0) * ppp;
+        let edge_scale = max_texture_side / width_px.max(height_px);
 
         let area = width_px * height_px;
         let area_scale = if area > Self::MAX_RENDER_PIXELS {
@@ -2992,8 +2987,7 @@ impl FigTreeGui {
             1.0
         };
 
-        // Settle may grow the logical canvas with zoom; clamp pixels to avoid OOM.
-        edge_scale.min(area_scale).clamp(0.1, 1.0)
+        edge_scale.min(area_scale)
     }
 
     fn draw_tree_canvas(&mut self, ui: &mut egui::Ui) {
@@ -3080,8 +3074,10 @@ impl FigTreeGui {
             };
 
             // Full-canvas settle would be clamped → prefer viewport settle instead.
-            let full_settle_scale = self.render_resolution_scale(display_width, display_height);
-            let want_viewport_settle = full_settle_scale < 0.999;
+            let max_texture_side = ui.input(|input| input.max_texture_side) as f32;
+            let full_settle_scale =
+                self.render_resolution_scale(full_canvas_local.size(), max_texture_side);
+            let want_viewport_settle = full_settle_scale < 1.0;
 
             let visible_origin = visible_local.min.to_vec2();
             let viewport_moved = self
@@ -3253,6 +3249,7 @@ impl FigTreeGui {
                 raster_height,
                 viewport_origin,
             );
+            let raster_scale = self.render_resolution_scale(raster_rect.size(), max_texture_side);
 
             let needs_base = self.base_tree_texture.is_none()
                 || self.base_render_signature != Some(base_signature);
@@ -3279,7 +3276,6 @@ impl FigTreeGui {
                 } else if let Some((tree, layout)) = self.build_display_tree_layout() {
                     let selected_nodes = self.tree_viewer.selected_nodes().clone();
                     let selected_tips = self.tree_viewer.selected_tips().clone();
-                    let scale = self.render_resolution_scale(raster_width, raster_height);
                     let ppp = self.pixels_per_point;
 
                     let base_scene = build_tree_scene(
@@ -3316,7 +3312,7 @@ impl FigTreeGui {
                         base: base_scene,
                         decor: decor_scene,
                         ppp,
-                        scale,
+                        scale: raster_scale,
                         job_id,
                     }) {
                         SubmitStatus::Submitted => {
@@ -3362,8 +3358,7 @@ impl FigTreeGui {
                         scene_inner,
                         &selected_nodes,
                         &selected_tips,
-                        raster_width,
-                        raster_height,
+                        raster_scale,
                         SceneLayer::Interaction,
                     ) {
                         Ok(output) => {
