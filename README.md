@@ -11,7 +11,7 @@ English | [简体中文](docs/README.zh-CN.md)
 - Interactive selection, branch highlighting, coloring, rerooting, and ordering
 - Read BEAST/FigTree and NHX annotations, interpret internal support labels per tree,
   and map attributes to labels, colours and node sizes
-- Copy a selected branch's subtree as Newick with `Cmd+C` (macOS) or `Ctrl+C` (Windows/Linux), or **Edit → Copy Subtree**. Focused text fields retain normal text copying.
+- Copy a selected branch's subtree as NEXUS with `Cmd+C` (macOS) or `Ctrl+C` (Windows/Linux), or **Edit → Copy Subtree**. Focused text fields retain normal text copying.
 - Export to `PNG`, `JPEG`, `SVG`, and `PDF`
 - Save editable results as `RTR` for reloading later
 

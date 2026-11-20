@@ -994,10 +994,10 @@ impl FigTreeGui {
             return;
         };
 
-        match io::serialize_subtree_newick(tree, node_id) {
-            Ok(newick) => {
-                ctx.copy_text(newick);
-                self.status = "Copied selected subtree as Newick.".to_string();
+        match io::serialize_subtree_nexus(tree, node_id) {
+            Ok(nexus) => {
+                ctx.copy_text(nexus);
+                self.status = "Copied selected subtree as NEXUS.".to_string();
             }
             Err(error) => {
                 self.last_error = Some(format!("Failed to copy subtree: {error}"));

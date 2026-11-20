@@ -362,18 +362,27 @@ fn serialize_tree_newick(tree: &Tree) -> Result<String> {
     Ok(out)
 }
 
-pub(crate) fn serialize_subtree_newick(tree: &Tree, root: NodeId) -> Result<String> {
-    if root >= tree.nodes.len() {
+pub(crate) fn serialize_subtree_nexus(tree: &Tree, root: NodeId) -> Result<String> {
+    let Some(node) = tree.nodes.get(root) else {
         bail!(
             "tree #{} has an invalid subtree root node {root}",
             tree.id + 1
         );
-    }
+    };
 
     let mut state = vec![0u8; tree.nodes.len()];
     let mut out = String::with_capacity(tree.nodes.len() * 8);
+    out.push_str("#NEXUS\n\nBEGIN TREES;\n\tTREE subtree = [&R] ");
+    // Keep a selected tip's branch length on an edge in a parenthesized tree.
+    let single_tip = node.is_leaf();
+    if single_tip {
+        out.push('(');
+    }
     append_newick_node(tree, root, &mut state, &mut out, false)?;
-    out.push(';');
+    if single_tip {
+        out.push(')');
+    }
+    out.push_str(";\nEND;\n");
     Ok(out)
 }
 
@@ -1151,7 +1160,7 @@ END;";
     }
 
     #[test]
-    fn serializes_subtree_as_portable_newick() {
+    fn serializes_subtree_as_portable_nexus() {
         let tree = parse_newick("((A:1,B:2)AB:3,C:4)Root;").unwrap().remove(0);
         let subtree_root = tree
             .nodes
@@ -1160,10 +1169,32 @@ END;";
             .expect("internal node AB")
             .id;
 
-        let newick = serialize_subtree_newick(&tree, subtree_root).unwrap();
+        let nexus = serialize_subtree_nexus(&tree, subtree_root).unwrap();
 
-        assert_eq!(newick, "(A:1,B:2)AB:3;");
-        assert!(!newick.contains(SERIALIZED_NODE_ID_ATTRIBUTE));
+        assert_eq!(
+            nexus,
+            "#NEXUS\n\nBEGIN TREES;\n\tTREE subtree = [&R] (A:1,B:2)AB:3;\nEND;\n"
+        );
+        let trees = parse_nexus(&nexus).unwrap();
+        assert_eq!(trees.len(), 1);
+        assert_eq!(trees[0].leaf_count(), 2);
+    }
+
+    #[test]
+    fn serializes_selected_tip_as_readable_nexus() {
+        let tree = parse_newick("('Tip; A'[&rate=0.5]:1,B:2);")
+            .unwrap()
+            .remove(0);
+        let selected_tip = tree.external_nodes()[0];
+
+        let nexus = serialize_subtree_nexus(&tree, selected_tip.id).unwrap();
+        let trees = parse_nexus(&nexus).unwrap();
+        let tips = trees[0].external_nodes();
+
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0].name.as_deref(), Some("Tip; A"));
+        assert_eq!(tips[0].length, Some(1.0));
+        assert_eq!(tips[0].get_numeric_attribute("rate"), Some(0.5));
     }
 
     #[test]
