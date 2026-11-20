@@ -38,6 +38,9 @@
 4. 提交公证并确认 `Accepted`，装订票据，再生成最终分发 zip。
 5. 解压最终 zip，重新检查依赖、签名、公证票据、Gatekeeper 和 `--help`。
 
+如果 `notarytool` 返回 HTTP 403 并提示必需的协议缺失或已过期，由团队的 Account Holder
+登录 [Apple Developer 账户](https://developer.apple.com/account/) 接受当前协议，再重跑失败的 GitHub Actions 任务。
+
 缺失或无法解析的非系统库、库文件名冲突、错误架构均会阻断打包。
 打包工具需要 Python 3.9 或以上及 Apple Command Line Tools。
 
@@ -60,7 +63,7 @@ xcrun notarytool store-credentials rhaetree-notary \
 # 构建 + 用 Developer ID Application 证书签名（自动加 hardened runtime + timestamp）
 scripts/build_macos_app.sh \
   --bundle-id com.yorkson.rhaetree \
-  --version 0.9.15 \
+  --version 0.9.16 \
   --developer-id "Developer ID Application: YOUR ORG (XXXXXXXXXX)"
 
 # 打 zip 提交公证

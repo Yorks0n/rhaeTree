@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -104,7 +104,8 @@ jobs:
           if [[ "${APP_VERSION}" == v* ]]; then
             APP_VERSION="${APP_VERSION#v}"
           else
-            APP_VERSION="0.9.15"
+            APP_VERSION="$(cargo metadata --no-deps --locked --format-version 1 | \
+              python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
           fi
           cargo build --release --locked
           mkdir -p dist
@@ -127,11 +128,18 @@ jobs:
           MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
         run: |
           ditto -c -k --sequesterRsrc --keepParent dist/rhaeTree.app "${RUNNER_TEMP}/rhaeTree-notary.zip"
-          xcrun notarytool submit "${RUNNER_TEMP}/rhaeTree-notary.zip" \
+          if ! xcrun notarytool submit "${RUNNER_TEMP}/rhaeTree-notary.zip" \
             --apple-id "${MACOS_NOTARY_APPLE_ID}" \
             --password "${MACOS_NOTARY_PASSWORD}" \
             --team-id "${MACOS_NOTARY_TEAM_ID}" \
-            --wait --timeout 30m --output-format json > "${RUNNER_TEMP}/notary-result.json"
+            --wait --timeout 30m --output-format json \
+            > "${RUNNER_TEMP}/notary-result.json" 2> "${RUNNER_TEMP}/notary-error.log"; then
+            cat "${RUNNER_TEMP}/notary-error.log" >&2
+            if grep -Fqi 'A required agreement is missing or has expired' "${RUNNER_TEMP}/notary-error.log"; then
+              echo '::error title=Apple Developer agreement required::The Account Holder must accept the current agreement at https://developer.apple.com/account/ before rerunning this job.'
+            fi
+            exit 1
+          fi
           cat "${RUNNER_TEMP}/notary-result.json"
           python3 -c 'import json,sys; result=json.load(open(sys.argv[1])); sys.exit(0 if result.get("status") == "Accepted" else 1)' \
             "${RUNNER_TEMP}/notary-result.json"
@@ -163,7 +171,7 @@ jobs:
           export PKG_CONFIG=/mingw64/bin/pkg-config
           export PKG_CONFIG_PATH=/mingw64/lib/pkgconfig:/mingw64/share/pkgconfig
           export PKG_CONFIG_ALLOW_CROSS=1
-          cargo build --release --target x86_64-pc-windows-gnu
+          cargo build --release --locked --target x86_64-pc-windows-gnu
           mkdir -p dist
           exe="target/x86_64-pc-windows-gnu/release/rhaeTree.exe"
           cp "${exe}" dist/rhaeTree.exe
@@ -188,7 +196,7 @@ jobs:
 
       - name: Upload macOS artifact
         if: startsWith(matrix.target.name, 'macos-')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rhaeTree-macos
           path: dist/${{ matrix.target.artifact }}
@@ -196,7 +204,7 @@ jobs:
 
       - name: Upload Windows artifact
         if: matrix.target.name == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rhaeTree-windows
           path: dist/${{ matrix.target.artifact }}
@@ -209,12 +217,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
       - name: Publish release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             artifacts/rhaeTree-macos/rhaeTree-macos.zip
